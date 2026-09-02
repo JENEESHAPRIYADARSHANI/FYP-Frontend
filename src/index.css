@@ -232,7 +232,7 @@ button:disabled {
   border: 1px solid var(--line-strong);
   background: var(--card);
   color: var(--ink);
-  font-size: 1.1rem;
+  font-size: 1.25rem;
 }
 
 .icon-btn:hover {

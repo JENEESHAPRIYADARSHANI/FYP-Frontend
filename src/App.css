@@ -21,14 +21,6 @@
   width: auto;
 }
 
-.brand-mark {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: var(--blue);
-  flex-shrink: 0;
-}
-
 .brand-name {
   font-family: var(--font-display);
   font-weight: 700;
@@ -603,7 +595,7 @@
   border: none;
   background: var(--bg);
   color: var(--ink);
-  font-size: 1.1rem;
+  font-size: 1.35rem;
   display: flex;
   align-items: center;
   justify-content: center;
