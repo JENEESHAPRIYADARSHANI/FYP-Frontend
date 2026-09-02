@@ -63,6 +63,7 @@ export default function CallRoom() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const timerRef = useRef(null);
+  const screenStreamRef = useRef(null);
 
   const [localStream, setLocalStream] = useState(null);
   const [micOn, setMicOn] = useState(true);
@@ -75,9 +76,10 @@ export default function CallRoom() {
   const [remoteIsSigning, setRemoteIsSigning] = useState(false);
   const [sslHistory, setSslHistory] = useState([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
 
   const { status: signalStatus, role, send, subscribe } = useSignalingSocket(roomCode);
-  const { remoteStream, connectionState } = usePeerConnection({
+  const { remoteStream, connectionState, replaceVideoTrack } = usePeerConnection({
     localStream,
     send,
     subscribe,
@@ -188,7 +190,39 @@ export default function CallRoom() {
 
   const leave = () => {
     localStream?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     navigate("/");
+  };
+
+  // Screen share swaps the outgoing WebRTC video track only — localVideoRef
+  // (and therefore the self-view tile and SSL hand-landmark detection, which
+  // reads from that same element) keeps showing your camera throughout, so
+  // signing recognition never stops just because you're sharing your screen.
+  const stopScreenShare = () => {
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    const camTrack = localStream?.getVideoTracks()[0];
+    if (camTrack) replaceVideoTrack(camTrack);
+    setIsScreenSharing(false);
+  };
+
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+      return;
+    }
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      screenStreamRef.current = screenStream;
+      await replaceVideoTrack(screenTrack);
+      // The browser's own "Stop sharing" control ends the track directly —
+      // catch that so our toggle state doesn't go stale.
+      screenTrack.onended = stopScreenShare;
+      setIsScreenSharing(true);
+    } catch {
+      // User cancelled the screen/window picker — nothing to do.
+    }
   };
 
   const togglePanel = (tab) => {
@@ -228,6 +262,12 @@ export default function CallRoom() {
             {statusKey === "connected" && ` · ${formatDuration(elapsedSeconds)}`}
           </span>
         </div>
+        {isScreenSharing && (
+          <button className="pill call-sharing-pill" onClick={stopScreenShare}>
+            <span className="dot dot-ok" />
+            {t("call.youAreSharing")}
+          </button>
+        )}
         <span className="call-topbar-spacer" />
         <button
           className="icon-btn"
@@ -442,7 +482,13 @@ export default function CallRoom() {
         >
           CC
         </button>
-        <button className="dock-btn" disabled title={t("call.screenShareSoon")} aria-label={t("call.screenShareSoon")}>
+        <button
+          className="dock-btn dock-btn-accent"
+          aria-pressed={isScreenSharing}
+          onClick={toggleScreenShare}
+          title={isScreenSharing ? t("call.stopScreenShare") : t("call.screenShareToggle")}
+          aria-label={isScreenSharing ? t("call.stopScreenShare") : t("call.screenShareToggle")}
+        >
           <ShareIcon />
         </button>
         <button

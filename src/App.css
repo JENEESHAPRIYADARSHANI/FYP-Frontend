@@ -360,6 +360,16 @@
   }
 }
 
+.call-sharing-pill {
+  background: var(--success-tint);
+  border-color: var(--success);
+  color: var(--success-strong);
+}
+
+.call-sharing-pill .dot-ok {
+  background: var(--success);
+}
+
 .call-topbar-spacer {
   flex: 1;
 }
