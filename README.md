@@ -1,4 +1,4 @@
-# SSL Connect — Frontend
+# Hastha — Frontend
 
 Real-time video conferencing between a hearing and a Deaf/hard-of-hearing
 participant in a single room, with live sign-language recognition running
