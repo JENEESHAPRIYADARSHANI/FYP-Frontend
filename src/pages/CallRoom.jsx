@@ -3,38 +3,87 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useSignalingSocket } from "../hooks/useSignalingSocket.js";
 import { usePeerConnection } from "../hooks/usePeerConnection.js";
 import { useLandmarkStream } from "../hooks/useLandmarkStream.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
+import LanguageSwitch from "../components/LanguageSwitch.jsx";
 
-const STATUS_LABEL = {
-  connected: "Connected",
-  connecting: "Connecting",
-  new: "Connecting",
-  disconnected: "Reconnecting",
-  failed: "Reconnecting",
-  closed: "Call ended",
+const STATUS_KEY = {
+  connected: "call.statusConnected",
+  connecting: "call.statusConnecting",
+  new: "call.statusConnecting",
+  disconnected: "call.statusReconnecting",
+  failed: "call.statusReconnecting",
+  closed: "call.statusEnded",
 };
+
+const CAPTION_SIZES = { small: "0.85rem", medium: "1.05rem", large: "1.3rem" };
+const A11Y_STORAGE_KEY = "signconnect-a11y-settings-v1";
+const DEFAULT_A11Y = {
+  captionsOn: true,
+  captionSize: "medium",
+  captionBg: "dark",
+  selfViewSize: "standard",
+  highContrast: false,
+};
+const MAX_SSL_HISTORY = 5;
+
+function loadA11ySettings() {
+  try {
+    const raw = localStorage.getItem(A11Y_STORAGE_KEY);
+    return raw ? { ...DEFAULT_A11Y, ...JSON.parse(raw) } : DEFAULT_A11Y;
+  } catch {
+    return DEFAULT_A11Y;
+  }
+}
+
+function formatDuration(totalSeconds) {
+  const m = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+  const s = Math.floor(totalSeconds % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function formatClock(date) {
+  return date.toTimeString().slice(0, 8);
+}
 
 export default function CallRoom() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const timerRef = useRef(null);
 
   const [localStream, setLocalStream] = useState(null);
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
+  const [recognitionOn, setRecognitionOn] = useState(true);
+  const [rightPanelTab, setRightPanelTab] = useState("ssl");
+  const [signFocus, setSignFocus] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [a11y, setA11y] = useState(loadA11ySettings);
+  const [remoteIsSigning, setRemoteIsSigning] = useState(false);
+  const [sslHistory, setSslHistory] = useState([]);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
-  const { status: signalStatus, send, subscribe } = useSignalingSocket(roomCode);
+  const { status: signalStatus, role, send, subscribe } = useSignalingSocket(roomCode);
   const { remoteStream, connectionState } = usePeerConnection({
     localStream,
     send,
     subscribe,
   });
-  const { prediction } = useLandmarkStream({
+  const { prediction, isSigning } = useLandmarkStream({
     videoRef: localVideoRef,
-    active: Boolean(localStream) && cameraOn,
+    active: Boolean(localStream) && cameraOn && recognitionOn,
   });
 
+  function roleLabel(r) {
+    if (r === "teacher") return t("call.teacher");
+    if (r === "student") return t("call.student");
+    return t("call.participant");
+  }
+
+  // Camera/mic acquisition.
   useEffect(() => {
     let cancelled = false;
 
@@ -65,6 +114,54 @@ export default function CallRoom() {
     }
   }, [remoteStream]);
 
+  // Persist accessibility preferences across sessions.
+  useEffect(() => {
+    try {
+      localStorage.setItem(A11Y_STORAGE_KEY, JSON.stringify(a11y));
+    } catch {
+      /* localStorage unavailable (private mode, quota) — settings just won't persist */
+    }
+  }, [a11y]);
+
+  // Call duration, counted only while actually connected.
+  useEffect(() => {
+    if (connectionState !== "connected") {
+      clearInterval(timerRef.current);
+      return;
+    }
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [connectionState]);
+
+  // Tell the other peer whenever our own hand-detection state flips, so they
+  // can show a "Signing" badge on your video — mirrors the same signal they
+  // send us for theirs.
+  useEffect(() => {
+    send({ type: "signing-state", isSigning });
+  }, [isSigning, send]);
+
+  useEffect(() => {
+    const unsubscribe = subscribe((message) => {
+      if (message.type === "signing-state") setRemoteIsSigning(Boolean(message.isSigning));
+      if (message.type === "peer-left") setRemoteIsSigning(false);
+    });
+    return unsubscribe;
+  }, [subscribe]);
+
+  // Keep a short, timestamped log of confirmed recognitions for the SSL panel.
+  useEffect(() => {
+    if (!prediction) return;
+    setSslHistory((history) => {
+      if (history[0]?.sign === prediction.sign && Date.now() - history[0]?.at < 4000) {
+        return history; // same sign still showing — don't spam duplicate rows
+      }
+      const entry = { ...prediction, at: Date.now(), time: formatClock(new Date()) };
+      return [entry, ...history].slice(0, MAX_SSL_HISTORY);
+    });
+  }, [prediction]);
+
   const toggleMic = () => {
     localStream?.getAudioTracks().forEach((track) => {
       track.enabled = !track.enabled;
@@ -84,81 +181,392 @@ export default function CallRoom() {
     navigate("/");
   };
 
+  const togglePanel = (tab) => {
+    setRightPanelTab((current) => (current === tab ? null : tab));
+  };
+
+  const setA11yField = (field, value) => {
+    setA11y((current) => ({ ...current, [field]: value }));
+  };
+
   if (signalStatus === "room-full") {
     return (
       <div className="call-room call-room-blocked">
         <div className="blocked-card">
           <span className="dot dot-danger" />
-          <h1>This room already has two participants.</h1>
-          <p>Ask your teacher for a new room code, or start your own class.</p>
+          <h1>{t("call.roomFullTitle")}</h1>
+          <p>{t("call.roomFullDesc")}</p>
           <button className="btn btn-primary" onClick={() => navigate("/")}>
-            Return home
+            {t("call.returnHome")}
           </button>
         </div>
       </div>
     );
   }
 
-  const statusKey = connectionState in STATUS_LABEL ? connectionState : "connecting";
-  const statusDot = statusKey === "connected" ? "dot-ok" : "dot-warn";
+  const statusKey = connectionState in STATUS_KEY ? connectionState : "connecting";
+  const otherRoleLabel = role === "teacher" ? t("call.student") : role === "student" ? t("call.teacher") : t("call.participant");
 
   return (
-    <div className="call-room">
-      <div className="call-remote">
-        {remoteStream ? (
-          <video ref={remoteVideoRef} autoPlay playsInline />
-        ) : (
-          <div className="call-waiting">
-            <span className="call-waiting-ring" />
-            <p>Waiting for the other participant to join…</p>
-          </div>
-        )}
-      </div>
-
-      <span className="pill call-status">
-        <span className={`dot ${statusDot}`} />
-        {STATUS_LABEL[statusKey]}
-      </span>
-      <span className="pill call-roomchip">{roomCode}</span>
-
-      <div className="call-caption">
-        <span className="caption-tag">Voice</span>
-        <p>"...could you repeat the last sign, please..."</p>
-      </div>
-
-      {prediction && (
-        <div className="call-signout">
-          <span className="signout-tag">Sign</span>
-          <strong>{prediction.sign}</strong>
-          <span className="signout-confidence">
-            {Math.round(prediction.confidence * 100)}% confidence
+    <div className={`call-room${a11y.highContrast ? " high-contrast" : ""}`}>
+      <header className="call-topbar">
+        <div className="call-topbar-title">
+          <strong>{t("call.room")} · {roomCode}</strong>
+          <span className="call-topbar-status">
+            <span className={`dot ${statusKey === "connected" ? "dot-ok" : "dot-warn"}`} />
+            {t(STATUS_KEY[statusKey])}
+            {statusKey === "connected" && ` · ${formatDuration(elapsedSeconds)}`}
           </span>
         </div>
-      )}
+        <span className="call-topbar-spacer" />
+        <button
+          className="icon-btn"
+          aria-label={t("call.settingsOpen")}
+          title={t("call.settingsOpen")}
+          onClick={() => setSettingsOpen(true)}
+        >
+          ⚙
+        </button>
+      </header>
 
-      <div className="call-local">
-        {cameraOn ? (
-          <video ref={localVideoRef} autoPlay muted playsInline />
-        ) : (
-          <div className="call-local-off">
-            <span className="avatar-placeholder" />
+      <div className="call-body">
+        <div className={`call-video-area${signFocus ? " sign-focus" : ""}`}>
+          <div className="call-remote">
+            {remoteStream ? (
+              <>
+                <video ref={remoteVideoRef} autoPlay playsInline />
+                {remoteIsSigning && (
+                  <span className="call-signing-badge">
+                    <span className="dot" /> {t("call.signingBadge")}
+                  </span>
+                )}
+                <button
+                  className="sign-focus-btn"
+                  aria-pressed={signFocus}
+                  onClick={() => setSignFocus((v) => !v)}
+                >
+                  ⤢ {t("call.signFocus")}
+                </button>
+                <span className="call-speaker-chip">
+                  <span className={`dot ${statusKey === "connected" ? "dot-ok" : "dot-warn"}`} />
+                  {otherRoleLabel}
+                </span>
+              </>
+            ) : (
+              <div className="call-waiting">
+                <span className="call-waiting-ring" />
+                <p>{t("call.waiting")}</p>
+              </div>
+            )}
           </div>
+
+          {a11y.captionsOn && (
+            <div className={`call-caption caption-bg-${a11y.captionBg}`} style={{ "--caption-font-size": CAPTION_SIZES[a11y.captionSize] }}>
+              <span className="caption-tag">{t("call.captionTag")}</span>
+              <p>{t("call.captionPlaceholder")}</p>
+            </div>
+          )}
+
+          <div className="call-thumbnails">
+            <div className={`call-local${a11y.selfViewSize === "large" ? " self-view-large" : ""}`}>
+              {cameraOn ? (
+                <video ref={localVideoRef} autoPlay muted playsInline />
+              ) : (
+                <div className="call-local-off">
+                  <span className="avatar-placeholder" />
+                </div>
+              )}
+              <span className="call-local-tag">
+                <span className={`dot ${micOn ? "dot-ok" : "dot-danger"}`} />
+                {t("call.you")}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {rightPanelTab && (
+          <aside className="call-panel">
+            <div className="call-panel-tabs" role="tablist">
+              <button
+                className="call-panel-tab"
+                role="tab"
+                aria-selected={rightPanelTab === "participants"}
+                onClick={() => setRightPanelTab("participants")}
+              >
+                {t("call.tabParticipants")}
+              </button>
+              <button
+                className="call-panel-tab"
+                role="tab"
+                aria-selected={rightPanelTab === "ssl"}
+                onClick={() => setRightPanelTab("ssl")}
+              >
+                {t("call.tabSsl")}
+              </button>
+              <button
+                className="call-panel-tab"
+                role="tab"
+                aria-selected={rightPanelTab === "chat"}
+                onClick={() => setRightPanelTab("chat")}
+              >
+                {t("call.tabChat")}
+              </button>
+              <button
+                className="call-panel-tab"
+                role="tab"
+                aria-selected={rightPanelTab === "transcript"}
+                onClick={() => setRightPanelTab("transcript")}
+              >
+                {t("call.tabTranscript")}
+              </button>
+            </div>
+
+            <div className="call-panel-body">
+              {rightPanelTab === "participants" && (
+                <>
+                  <div className="panel-heading">{t("call.participantsHeading")}</div>
+                  <div className="panel-row">
+                    <div className="panel-row-label">
+                      <strong>{t("call.you")}</strong>
+                      <span>{roleLabel(role)}</span>
+                    </div>
+                    <span className={`dot ${micOn ? "dot-ok" : "dot-danger"}`} />
+                  </div>
+                  <div className="panel-row">
+                    <div className="panel-row-label">
+                      <strong>{otherRoleLabel}</strong>
+                      <span>{remoteStream ? t("call.connected") : t("call.waitingToJoin")}</span>
+                    </div>
+                    <span className={`dot ${remoteStream ? "dot-ok" : "dot-warn"}`} />
+                  </div>
+                </>
+              )}
+
+              {rightPanelTab === "ssl" && (
+                <>
+                  <div>
+                    <div className="panel-heading">{t("call.sslHeading")}</div>
+                    <p className="panel-sub">{t("call.sslSub")}</p>
+                  </div>
+
+                  <div className="panel-row">
+                    <div className="panel-row-label">
+                      <strong>{t("call.recognition")}</strong>
+                      <span>{recognitionOn ? t("call.on") : t("call.off")}</span>
+                    </div>
+                    <button
+                      className="switch"
+                      aria-pressed={recognitionOn}
+                      aria-label={t("call.recognition")}
+                      onClick={() => setRecognitionOn((v) => !v)}
+                    />
+                  </div>
+
+                  {prediction ? (
+                    <div className="ssl-output-card">
+                      <span className="ssl-output-eyebrow">{t("call.recognizedSign")}</span>
+                      <span className="ssl-output-sign">"{prediction.sign}"</span>
+                      <div className="ssl-confidence-track">
+                        <div
+                          className="ssl-confidence-fill"
+                          style={{ width: `${Math.round(prediction.confidence * 100)}%` }}
+                        />
+                      </div>
+                      <span className="ssl-confidence-label">
+                        {t("call.confidence")}: {Math.round(prediction.confidence * 100)}%
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="ssl-empty">
+                      {recognitionOn ? t("call.sslEmptyOn") : t("call.sslEmptyOff")}
+                    </div>
+                  )}
+
+                  {sslHistory.length > 0 && (
+                    <>
+                      <div className="ssl-history-heading">{t("call.recentRecognitions")}</div>
+                      <div className="ssl-history-list">
+                        {sslHistory.map((entry) => (
+                          <div className="ssl-history-row" key={entry.at}>
+                            <span>"{entry.sign}"</span>
+                            <time>{entry.time}</time>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+
+              {rightPanelTab === "chat" && (
+                <div className="panel-placeholder">
+                  <strong>{t("call.chatSoonTitle")}</strong>
+                  <p>{t("call.chatSoonDesc")}</p>
+                </div>
+              )}
+
+              {rightPanelTab === "transcript" && (
+                <div className="panel-placeholder">
+                  <strong>{t("call.transcriptSoonTitle")}</strong>
+                  <p>{t("call.transcriptSoonDesc")}</p>
+                </div>
+              )}
+            </div>
+          </aside>
         )}
-        <span className="call-local-tag">You</span>
       </div>
 
       <div className="call-dock">
-        <button className="dock-btn" onClick={toggleMic} aria-pressed={micOn}>
+        <button className="dock-btn dock-btn-mute" onClick={toggleMic} aria-pressed={micOn} aria-label={t("call.micToggle")}>
           {micOn ? "🎤" : "🔇"}
         </button>
-        <button className="dock-btn" onClick={toggleCamera} aria-pressed={cameraOn}>
+        <button className="dock-btn dock-btn-mute" onClick={toggleCamera} aria-pressed={cameraOn} aria-label={t("call.cameraToggle")}>
           {cameraOn ? "📷" : "🚫"}
         </button>
+        <button
+          className="dock-btn dock-btn-accent"
+          aria-pressed={a11y.captionsOn}
+          aria-label={t("call.captionsToggle")}
+          title="CC"
+          onClick={() => setA11yField("captionsOn", !a11y.captionsOn)}
+        >
+          CC
+        </button>
+        <button className="dock-btn" disabled title={t("call.screenShareSoon")} aria-label={t("call.screenShareSoon")}>
+          🖥
+        </button>
+        <button
+          className="dock-btn dock-btn-ssl"
+          aria-pressed={rightPanelTab === "ssl"}
+          aria-label={t("call.sslToggle")}
+          title="SSL"
+          onClick={() => togglePanel("ssl")}
+        >
+          SSL
+        </button>
+        <button
+          className="dock-btn"
+          aria-pressed={rightPanelTab === "participants"}
+          aria-label={t("call.participantsToggle")}
+          title={t("call.tabParticipants")}
+          onClick={() => togglePanel("participants")}
+        >
+          👥
+        </button>
+        <button
+          className="dock-btn"
+          aria-pressed={rightPanelTab === "chat"}
+          aria-label={t("call.chatToggle")}
+          title={t("call.tabChat")}
+          onClick={() => togglePanel("chat")}
+        >
+          💬
+        </button>
+        <button className="dock-btn" aria-label={t("call.moreOptions")} title={t("call.settingsOpen")} onClick={() => setSettingsOpen(true)}>
+          ⋯
+        </button>
         <span className="dock-divider" />
-        <button className="dock-btn dock-btn-danger" onClick={leave} aria-label="Leave call">
+        <button className="dock-btn dock-btn-danger" onClick={leave} aria-label={t("call.leaveCall")}>
           ⏻
         </button>
       </div>
+
+      {settingsOpen && (
+        <div className="settings-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-modal-head">
+              <div>
+                <h2>{t("settings.title")}</h2>
+                <p>{t("settings.subtitle")}</p>
+              </div>
+              <button className="icon-btn" aria-label={t("settings.close")} onClick={() => setSettingsOpen(false)}>
+                ✕
+              </button>
+            </div>
+
+            <div className="settings-section">
+              <span className="settings-section-title">{t("settings.sectionLanguage")}</span>
+              <span className="settings-field-label">{t("settings.languageHint")}</span>
+              <LanguageSwitch />
+            </div>
+
+            <div className="settings-section">
+              <span className="settings-section-title">{t("settings.sectionCaptions")}</span>
+              <span className="settings-field-label">{t("settings.captionSize")}</span>
+              <div className="segmented" role="group" aria-label={t("settings.captionSize")}>
+                {[
+                  ["small", t("settings.small")],
+                  ["medium", t("settings.medium")],
+                  ["large", t("settings.large")],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    aria-pressed={a11y.captionSize === value}
+                    onClick={() => setA11yField("captionSize", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-field-label">{t("settings.captionBackground")}</span>
+              <div className="segmented" role="group" aria-label={t("settings.captionBackground")}>
+                {[
+                  ["light", t("settings.light")],
+                  ["dark", t("settings.dark")],
+                  ["contrast", t("settings.highContrastOpt")],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    aria-pressed={a11y.captionBg === value}
+                    onClick={() => setA11yField("captionBg", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <span className="settings-section-title">{t("settings.sectionSignVideo")}</span>
+              <span className="settings-field-label">{t("settings.selfViewSize")}</span>
+              <div className="segmented" role="group" aria-label={t("settings.selfViewSize")}>
+                {[
+                  ["standard", t("settings.standard")],
+                  ["large", t("settings.largeOpt")],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    aria-pressed={a11y.selfViewSize === value}
+                    onClick={() => setA11yField("selfViewSize", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <span className="settings-section-title">{t("settings.sectionDisplay")}</span>
+              <div className="settings-toggle-row">
+                <div className="panel-row-label">
+                  <strong>{t("settings.highContrastMode")}</strong>
+                  <span>{t("settings.highContrastDesc")}</span>
+                </div>
+                <button
+                  className="switch"
+                  aria-pressed={a11y.highContrast}
+                  aria-label={t("settings.highContrastMode")}
+                  onClick={() => setA11yField("highContrast", !a11y.highContrast)}
+                />
+              </div>
+            </div>
+
+            <button className="btn btn-primary btn-block" onClick={() => setSettingsOpen(false)}>
+              {t("settings.done")}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

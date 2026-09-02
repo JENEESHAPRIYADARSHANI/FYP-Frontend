@@ -70,7 +70,9 @@ export function useLandmarkStream({ videoRef, active }) {
   const wsRef = useRef(null);
   const bufferRef = useRef([]);
   const streakRef = useRef({ classId: null, count: 0 });
+  const isSigningRef = useRef(false);
   const [prediction, setPrediction] = useState(null); // { sign, confidence }
+  const [isSigning, setIsSigning] = useState(false); // hands currently detected in frame
 
   useEffect(() => {
     if (!active || !videoRef.current) return;
@@ -115,6 +117,11 @@ export function useLandmarkStream({ videoRef, active }) {
           buffer.push(frame);
           if (buffer.length > WINDOW_SIZE) buffer.shift();
 
+          if (anyHand !== isSigningRef.current) {
+            isSigningRef.current = anyHand;
+            setIsSigning(anyHand);
+          }
+
           if (!anyHand) {
             // Idle: let the streak lapse instead of holding a stale sign up.
             streakRef.current = { classId: null, count: 0 };
@@ -145,8 +152,10 @@ export function useLandmarkStream({ videoRef, active }) {
       wsRef.current = null;
       bufferRef.current = [];
       streakRef.current = { classId: null, count: 0 };
+      isSigningRef.current = false;
+      setIsSigning(false);
     };
   }, [active, videoRef]);
 
-  return { prediction };
+  return { prediction, isSigning };
 }
