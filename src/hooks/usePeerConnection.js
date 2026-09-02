@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPeerConnection } from "../services/peerService.js";
 
 // Drives one RTCPeerConnection from signaling messages relayed by the
@@ -62,5 +62,13 @@ export function usePeerConnection({ localStream, send, subscribe }) {
     };
   }, [localStream, send, subscribe]);
 
-  return { remoteStream, connectionState };
+  // Swaps the outgoing video track in place (screen share <-> camera) without
+  // renegotiating the connection — the remote side's existing <video> element
+  // just starts rendering whatever this sender is now sending.
+  const replaceVideoTrack = useCallback((track) => {
+    const sender = pcRef.current?.getSenders().find((s) => s.track && s.track.kind === "video");
+    return sender?.replaceTrack(track);
+  }, []);
+
+  return { remoteStream, connectionState, replaceVideoTrack };
 }
