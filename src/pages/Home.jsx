@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useLanguage } from "../context/LanguageContext.jsx";
+import LanguageSwitch from "../components/LanguageSwitch.jsx";
 
 function generateRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -12,6 +14,7 @@ function generateRoomCode() {
 
 export default function Home() {
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const [joinCode, setJoinCode] = useState("");
 
   const startClass = () => {
@@ -27,47 +30,41 @@ export default function Home() {
 
   return (
     <div className="home">
-      <div className="home-ambient" aria-hidden="true">
-        <span className="blob blob-teal" />
-        <span className="blob blob-amber" />
-      </div>
-
       <header className="home-brand">
         <span className="brand-mark" />
-        <span className="brand-name">SSL Connect</span>
+        <span className="brand-name">{t("home.brand")}</span>
+        <span className="home-brand-spacer" />
+        <LanguageSwitch />
       </header>
 
       <main className="home-hero">
-        <h1>One room. Two languages, understood.</h1>
-        <p className="home-lede">
-          Live captions for spoken words, live recognition for signed ones —
-          meet in a single room either way.
-        </p>
+        <h1>{t("home.title")}</h1>
+        <p className="home-lede">{t("home.lede")}</p>
 
         <div className="home-cards">
           <article className="role-card role-teacher">
-            <span className="role-tag tag-amber">Teacher</span>
-            <h2>Start a class</h2>
-            <p>Create a room and share the code with your student.</p>
+            <span className="role-tag tag-teacher">{t("home.teacherTag")}</span>
+            <h2>{t("home.startTitle")}</h2>
+            <p>{t("home.startDesc")}</p>
             <button className="btn btn-primary" onClick={startClass}>
-              Start Class
+              {t("home.startBtn")}
             </button>
           </article>
 
           <article className="role-card role-student">
-            <span className="role-tag tag-teal">Student</span>
-            <h2>Join a class</h2>
-            <p>Enter the code your teacher gave you.</p>
+            <span className="role-tag tag-student">{t("home.studentTag")}</span>
+            <h2>{t("home.joinTitle")}</h2>
+            <p>{t("home.joinDesc")}</p>
             <form onSubmit={joinClass}>
               <input
                 className="field"
                 value={joinCode}
                 onChange={(event) => setJoinCode(event.target.value)}
-                placeholder="Room code"
+                placeholder={t("home.roomCodePlaceholder")}
                 maxLength={6}
               />
               <button className="btn btn-primary" type="submit">
-                Join Class
+                {t("home.joinBtn")}
               </button>
             </form>
           </article>

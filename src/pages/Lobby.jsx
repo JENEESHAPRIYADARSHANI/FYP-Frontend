@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useLanguage } from "../context/LanguageContext.jsx";
+import LanguageSwitch from "../components/LanguageSwitch.jsx";
 
 // Pre-call lobby: camera/mic preview + device picker before joining the room.
 // This only touches local media (getUserMedia) — no signaling/backend yet.
 export default function Lobby() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
@@ -72,13 +75,14 @@ export default function Lobby() {
   return (
     <div className="lobby">
       <header className="lobby-top">
-        <button className="icon-btn" aria-label="Back to home" onClick={() => navigate("/")}>
+        <button className="icon-btn" aria-label={t("lobby.back")} onClick={() => navigate("/")}>
           ←
         </button>
         <span className="pill">
           <span className="dot dot-ok" />
-          ROOM · {roomCode}
+          {t("lobby.room")} · {roomCode}
         </span>
+        <LanguageSwitch />
       </header>
 
       <div className="lobby-main">
@@ -91,15 +95,15 @@ export default function Lobby() {
           )}
           {error && (
             <div className="lobby-error">
-              <strong>Camera/microphone access needed</strong>
+              <strong>{t("lobby.errorHeading")}</strong>
               <p>{error}</p>
             </div>
           )}
         </div>
 
         <aside className="lobby-panel">
-          <h1>Ready to join?</h1>
-          <p>Check your camera and microphone before you go in.</p>
+          <h1>{t("lobby.ready")}</h1>
+          <p>{t("lobby.checkDevices")}</p>
 
           <div className="lobby-toggles">
             <button
@@ -107,20 +111,20 @@ export default function Lobby() {
               onClick={toggleMic}
               aria-pressed={micOn}
             >
-              {micOn ? "🎤 Mic on" : "🔇 Mic off"}
+              {micOn ? `🎤 ${t("lobby.micOn")}` : `🔇 ${t("lobby.micOff")}`}
             </button>
             <button
               className="btn btn-ghost"
               onClick={toggleCamera}
               aria-pressed={cameraOn}
             >
-              {cameraOn ? "📷 Camera on" : "🚫 Camera off"}
+              {cameraOn ? `📷 ${t("lobby.cameraOn")}` : `🚫 ${t("lobby.cameraOff")}`}
             </button>
           </div>
 
           <div className="lobby-devices">
             <label>
-              Camera
+              {t("lobby.cameraLabel")}
               <select
                 className="field"
                 value={selectedCamera}
@@ -128,13 +132,13 @@ export default function Lobby() {
               >
                 {devices.cameras.map((d) => (
                   <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || "Camera"}
+                    {d.label || t("lobby.cameraFallback")}
                   </option>
                 ))}
               </select>
             </label>
             <label>
-              Microphone
+              {t("lobby.micLabel")}
               <select
                 className="field"
                 value={selectedMic}
@@ -142,7 +146,7 @@ export default function Lobby() {
               >
                 {devices.mics.map((d) => (
                   <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || "Microphone"}
+                    {d.label || t("lobby.micFallback")}
                   </option>
                 ))}
               </select>
@@ -154,7 +158,7 @@ export default function Lobby() {
             onClick={join}
             disabled={!!error}
           >
-            Join
+            {t("lobby.join")}
           </button>
         </aside>
       </div>
