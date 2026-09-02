@@ -5,6 +5,16 @@ import { usePeerConnection } from "../hooks/usePeerConnection.js";
 import { useLandmarkStream } from "../hooks/useLandmarkStream.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
+import {
+  MicIcon,
+  CameraIcon,
+  ShareIcon,
+  ParticipantsIcon,
+  ChatIcon,
+  MoreIcon,
+  LeaveIcon,
+  SettingsIcon,
+} from "../components/icons.jsx";
 
 const STATUS_KEY = {
   connected: "call.statusConnected",
@@ -225,7 +235,7 @@ export default function CallRoom() {
           title={t("call.settingsOpen")}
           onClick={() => setSettingsOpen(true)}
         >
-          ⚙
+          <SettingsIcon />
         </button>
       </header>
 
@@ -418,10 +428,10 @@ export default function CallRoom() {
 
       <div className="call-dock">
         <button className="dock-btn dock-btn-mute" onClick={toggleMic} aria-pressed={micOn} aria-label={t("call.micToggle")}>
-          {micOn ? "🎤" : "🔇"}
+          <MicIcon slash={!micOn} />
         </button>
         <button className="dock-btn dock-btn-mute" onClick={toggleCamera} aria-pressed={cameraOn} aria-label={t("call.cameraToggle")}>
-          {cameraOn ? "📷" : "🚫"}
+          <CameraIcon slash={!cameraOn} />
         </button>
         <button
           className="dock-btn dock-btn-accent"
@@ -433,7 +443,7 @@ export default function CallRoom() {
           CC
         </button>
         <button className="dock-btn" disabled title={t("call.screenShareSoon")} aria-label={t("call.screenShareSoon")}>
-          🖥
+          <ShareIcon />
         </button>
         <button
           className="dock-btn dock-btn-ssl"
@@ -451,7 +461,7 @@ export default function CallRoom() {
           title={t("call.tabParticipants")}
           onClick={() => togglePanel("participants")}
         >
-          👥
+          <ParticipantsIcon />
         </button>
         <button
           className="dock-btn"
@@ -460,14 +470,14 @@ export default function CallRoom() {
           title={t("call.tabChat")}
           onClick={() => togglePanel("chat")}
         >
-          💬
+          <ChatIcon />
         </button>
         <button className="dock-btn" aria-label={t("call.moreOptions")} title={t("call.settingsOpen")} onClick={() => setSettingsOpen(true)}>
-          ⋯
+          <MoreIcon />
         </button>
         <span className="dock-divider" />
         <button className="dock-btn dock-btn-danger" onClick={leave} aria-label={t("call.leaveCall")}>
-          ⏻
+          <LeaveIcon />
         </button>
       </div>
 
