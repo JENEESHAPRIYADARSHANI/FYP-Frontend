@@ -64,6 +64,7 @@ export default function CallRoom() {
   const remoteVideoRef = useRef(null);
   const timerRef = useRef(null);
   const screenStreamRef = useRef(null);
+  const lastCameraDeviceIdRef = useRef(null);
 
   const [localStream, setLocalStream] = useState(null);
   const [micOn, setMicOn] = useState(true);
@@ -181,11 +182,38 @@ export default function CallRoom() {
     setMicOn((on) => !on);
   };
 
-  const toggleCamera = () => {
-    localStream?.getVideoTracks().forEach((track) => {
-      track.enabled = !track.enabled;
-    });
-    setCameraOn((on) => !on);
+  // Actually stops the hardware track on "off" (not just track.enabled =
+  // false) so the camera's physical indicator light turns off — muting alone
+  // leaves the device captured and the LED lit, which is a real privacy
+  // concern to get right, especially building for children. Re-enabling
+  // re-requests the same physical camera and feeds the fresh track back into
+  // both the self-view element and the peer connection.
+  const toggleCamera = async () => {
+    if (cameraOn) {
+      const track = localStream?.getVideoTracks()[0];
+      const deviceId = track?.getSettings().deviceId;
+      lastCameraDeviceIdRef.current = deviceId;
+      if (track) {
+        track.stop();
+        localStream.removeTrack(track);
+      }
+      await replaceVideoTrack(null);
+      setCameraOn(false);
+      return;
+    }
+    try {
+      const deviceId = lastCameraDeviceIdRef.current;
+      const freshStream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId } } : true,
+      });
+      const newTrack = freshStream.getVideoTracks()[0];
+      localStream?.addTrack(newTrack);
+      await replaceVideoTrack(newTrack);
+      setCameraOn(true);
+    } catch {
+      // Permission revoked or camera unavailable — stay off rather than
+      // leaving the toggle in an inconsistent state.
+    }
   };
 
   const leave = () => {
@@ -368,6 +396,13 @@ export default function CallRoom() {
                 onClick={() => setRightPanelTab("transcript")}
               >
                 {t("call.tabTranscript")}
+              </button>
+              <button
+                className="call-panel-close"
+                aria-label={t("call.closePanel")}
+                onClick={() => setRightPanelTab(null)}
+              >
+                ✕
               </button>
             </div>
 
