@@ -348,7 +348,20 @@ export default function CallRoom() {
           <div className="call-thumbnails">
             <div className={`call-local${a11y.selfViewSize === "large" ? " self-view-large" : ""}`}>
               {cameraOn ? (
-                <video ref={localVideoRef} autoPlay muted playsInline />
+                <video
+                  ref={(el) => {
+                    // This element unmounts/remounts each time cameraOn
+                    // flips (see the placeholder div below), which drops the
+                    // DOM-level srcObject binding — a plain ref only fires on
+                    // mount, with nothing to rebind it afterwards, so set it
+                    // right here rather than relying on a separate effect.
+                    localVideoRef.current = el;
+                    if (el && localStream) el.srcObject = localStream;
+                  }}
+                  autoPlay
+                  muted
+                  playsInline
+                />
               ) : (
                 <div className="call-local-off">
                   <span className="avatar-placeholder" />
