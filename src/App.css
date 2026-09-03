@@ -959,17 +959,21 @@
   }
 
   .call-dock {
-    gap: 0.35rem;
-    padding: 0.4rem 0.5rem;
+    gap: 0.2rem;
+    padding: 0.35rem 0.4rem;
+    max-width: calc(100% - 1rem);
+    overflow-x: auto; /* safety net below ~340px, where even these sizes won't all fit */
   }
 
   .dock-btn {
-    width: 38px;
-    height: 38px;
-    font-size: 1rem;
+    width: 32px;
+    height: 32px;
+    font-size: 0.9rem;
+    flex-shrink: 0;
   }
 
   .dock-divider {
+    flex-shrink: 0;
     margin: 0 0.05rem;
   }
 
