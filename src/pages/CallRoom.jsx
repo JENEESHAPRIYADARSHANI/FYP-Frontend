@@ -5,6 +5,7 @@ import { usePeerConnection } from "../hooks/usePeerConnection.js";
 import { useLandmarkStream } from "../hooks/useLandmarkStream.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
+import ThemeSwitch from "../components/ThemeSwitch.jsx";
 import {
   MicIcon,
   CameraIcon,
@@ -651,6 +652,8 @@ export default function CallRoom() {
 
             <div className="settings-section">
               <span className="settings-section-title">{t("settings.sectionDisplay")}</span>
+              <span className="settings-field-label">{t("settings.themeHint")}</span>
+              <ThemeSwitch />
               <div className="settings-toggle-row">
                 <div className="panel-row-label">
                   <strong>{t("settings.highContrastMode")}</strong>

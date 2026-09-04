@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
+import ThemeSwitch from "../components/ThemeSwitch.jsx";
 
 // Pre-call lobby: camera/mic preview + device picker before joining the room.
 // This only touches local media (getUserMedia) — no signaling/backend yet.
@@ -82,7 +83,10 @@ export default function Lobby() {
           <span className="dot dot-ok" />
           {t("lobby.room")} · {roomCode}
         </span>
-        <LanguageSwitch />
+        <div className="header-controls">
+          <ThemeSwitch />
+          <LanguageSwitch />
+        </div>
       </header>
 
       <div className="lobby-main">

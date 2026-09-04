@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
+import ThemeSwitch from "../components/ThemeSwitch.jsx";
 import HasthaLogo from "../components/HasthaLogo.jsx";
 
 function generateRoomCode() {
@@ -35,7 +36,10 @@ export default function Home() {
         <HasthaLogo badge size={32} />
         <span className="brand-name">{t("home.brand")}</span>
         <span className="home-brand-spacer" />
-        <LanguageSwitch />
+        <div className="header-controls">
+          <ThemeSwitch />
+          <LanguageSwitch />
+        </div>
       </header>
 
       <main className="home-hero">
