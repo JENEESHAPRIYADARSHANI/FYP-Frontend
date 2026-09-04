@@ -17,8 +17,15 @@
   flex: 1;
 }
 
-.language-switch {
+.language-switch,
+.theme-switch {
   width: auto;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
 }
 
 .brand-name {
@@ -278,8 +285,33 @@
   overflow: hidden;
 }
 
+/* Genuinely stronger, not just a one-variable nudge: secondary text goes
+   fully opaque, dividers go to full ink contrast, and — since several
+   interactive elements (dock buttons, panel tabs, participant rows) never
+   had a border to begin with, only a background-color difference — this
+   is where they actually get one, rather than relying on a --line override
+   that would have had nothing to apply to. */
 .call-room.high-contrast {
-  --line: var(--line-strong);
+  --line: var(--ink);
+  --line-strong: var(--ink);
+  --ink-soft: var(--ink);
+}
+
+.call-room.high-contrast .dock-btn,
+.call-room.high-contrast .call-panel-tab,
+.call-room.high-contrast .panel-row,
+.call-room.high-contrast .ssl-history-row,
+.call-room.high-contrast .segmented button {
+  border: 1.5px solid var(--ink);
+}
+
+.call-room.high-contrast .call-panel-tab[aria-selected="true"] {
+  border-color: var(--blue);
+  border-width: 2px;
+}
+
+.call-room.high-contrast .call-caption {
+  border-left-width: 5px;
 }
 
 .call-room-blocked {
@@ -497,7 +529,13 @@
   flex-shrink: 0;
   max-width: min(70ch, 100%);
   align-self: center;
-  background: var(--call-chip);
+  /* Solid, theme-independent colors on purpose: this bar sits in the page
+     background (not over the video), so a translucent tint composited over
+     a variable --bg would read as washed-out gray-on-white in light theme
+     and near-invisible white-on-white in dark theme. Light/Dark/High-contrast
+     here are a deliberate captioning choice, not something that should
+     silently flip with the app theme. */
+  background: var(--call-video);
   color: #fff;
   border-left: 3px solid var(--blue);
   border-radius: 10px;
@@ -509,8 +547,8 @@
 }
 
 .call-caption.caption-bg-light {
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--ink);
+  background: #ffffff;
+  color: #0f172a;
 }
 
 .call-caption.caption-bg-contrast {
