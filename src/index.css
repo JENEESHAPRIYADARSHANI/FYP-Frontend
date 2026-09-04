@@ -4,9 +4,10 @@
   brand color. See design/Hastha UI-UX chapter for the full token
   rationale and a WCAG contrast audit of every pairing below.
 
-  Locked to light mode on purpose: the app should always match the approved
-  Figma/thesis screenshots exactly, regardless of the visitor's OS theme,
-  rather than falling back to an unreviewed dark variant.
+  Theme is an explicit user choice (ThemeContext, [data-theme] on <html>),
+  never automatic OS-based switching — that's what caused the app to look
+  different from the approved Figma/thesis screenshots earlier. Light stays
+  the default; dark only applies when a visitor deliberately picks it.
 */
 :root {
   --bg: #f8fafc;
@@ -48,6 +49,33 @@
   --text-3xl: clamp(2rem, 4.5vw, 3rem); /* hero */
 
   color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #0b0e18;
+  --card: #121628;
+  --card-tint: rgba(37, 99, 235, 0.16);
+  --ink: #e8eaf2;
+  --ink-soft: #a2a9be;
+  --line: #232838;
+  --line-strong: #323a52;
+
+  --blue: #7c97ff;
+  --blue-strong: #a9bbff;
+  --blue-tint: rgba(37, 99, 235, 0.18);
+  --blue-ink: #c7d4ff;
+
+  --success: #3fbe6e;
+  --success-strong: #5fd489;
+  --success-tint: rgba(63, 190, 110, 0.16);
+  --warning: #e3a238;
+  --warning-tint: rgba(227, 162, 56, 0.16);
+  --danger: #f0655f;
+  --danger-tint: rgba(240, 101, 95, 0.16);
+
+  --focus-ring: 0 0 0 3px rgba(124, 151, 255, 0.4);
+
+  color-scheme: dark;
 }
 
 /* Call room deliberately stays a fixed dark surface regardless of system
