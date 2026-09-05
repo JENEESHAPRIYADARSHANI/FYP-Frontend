@@ -33,7 +33,7 @@ export default function Home() {
   return (
     <div className="home">
       <header className="home-brand">
-        <HasthaLogo size={32} />
+        <HasthaLogo size={44} />
         <span className="brand-name">{t("home.brand")}</span>
         <span className="home-brand-spacer" />
         <div className="header-controls">
