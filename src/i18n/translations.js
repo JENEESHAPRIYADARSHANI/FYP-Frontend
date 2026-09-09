@@ -42,6 +42,8 @@ export const translations = {
       micFallback: "Microphone",
       join: "Join",
       errorHeading: "Camera/microphone access needed",
+      sslToggleLabel: "Sign Language Recognition",
+      sslToggleDesc: "Recognize signs from your camera during the call. You can change this anytime.",
     },
     call: {
       room: "Room",
@@ -155,6 +157,8 @@ export const translations = {
       micFallback: "මයික්‍රෆෝනය",
       join: "එකතු වන්න",
       errorHeading: "කැමරාව/මයික්‍රෆෝන ප්‍රවේශය අවශ්‍යයි",
+      sslToggleLabel: "සංඥා භාෂා හඳුනාගැනීම",
+      sslToggleDesc: "ඇමතුම අතරතුර ඔබේ කැමරාවෙන් සංඥා හඳුනාගනී. ඕනෑම වේලාවක මෙය වෙනස් කළ හැක.",
     },
     call: {
       room: "කාමරය",

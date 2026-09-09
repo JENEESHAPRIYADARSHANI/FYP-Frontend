@@ -3,6 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
 import ThemeSwitch from "../components/ThemeSwitch.jsx";
+import AccountBadge from "../components/AccountBadge.jsx";
+import { loadSslPreference, saveSslPreference } from "../utils/sslPreference.js";
 
 // Pre-call lobby: camera/mic preview + device picker before joining the room.
 // This only touches local media (getUserMedia) — no signaling/backend yet.
@@ -19,6 +21,7 @@ export default function Lobby() {
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
   const [error, setError] = useState(null);
+  const [sslEnabled, setSslEnabled] = useState(loadSslPreference);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,9 +71,16 @@ export default function Lobby() {
     setCameraOn((on) => !on);
   };
 
+  const toggleSsl = () => {
+    setSslEnabled((on) => {
+      const next = !on;
+      saveSslPreference(next);
+      return next;
+    });
+  };
+
   const join = () => {
-    // Phase 2 wires this to the actual call room + signaling connection.
-    navigate(`/call/${roomCode}`);
+    navigate(`/call/${roomCode}`, { state: { sslEnabled } });
   };
 
   return (
@@ -86,6 +96,7 @@ export default function Lobby() {
         <div className="header-controls">
           <ThemeSwitch />
           <LanguageSwitch />
+          <AccountBadge />
         </div>
       </header>
 
@@ -155,6 +166,22 @@ export default function Lobby() {
                 ))}
               </select>
             </label>
+          </div>
+
+          <div className="lobby-ssl">
+            <div className="panel-row">
+              <div className="panel-row-label">
+                <strong>{t("lobby.sslToggleLabel")}</strong>
+                <span>{sslEnabled ? t("call.on") : t("call.off")}</span>
+              </div>
+              <button
+                className="switch"
+                aria-pressed={sslEnabled}
+                aria-label={t("lobby.sslToggleLabel")}
+                onClick={toggleSsl}
+              />
+            </div>
+            <p className="lobby-ssl-hint">{t("lobby.sslToggleDesc")}</p>
           </div>
 
           <button
