@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useSignalingSocket } from "../hooks/useSignalingSocket.js";
 import { usePeerConnection } from "../hooks/usePeerConnection.js";
 import { useLandmarkStream } from "../hooks/useLandmarkStream.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
 import ThemeSwitch from "../components/ThemeSwitch.jsx";
+import AccountBadge from "../components/AccountBadge.jsx";
+import { loadSslPreference, saveSslPreference } from "../utils/sslPreference.js";
+import { createCallRecorder, downloadRecording } from "../services/recordingService.js";
+import Whiteboard from "../components/Whiteboard.jsx";
 import {
   MicIcon,
   CameraIcon,
@@ -15,6 +19,8 @@ import {
   MoreIcon,
   LeaveIcon,
   SettingsIcon,
+  WhiteboardIcon,
+  RecordIcon,
 } from "../components/icons.jsx";
 
 const STATUS_KEY = {
@@ -59,18 +65,27 @@ function formatClock(date) {
 export default function CallRoom() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { t } = useLanguage();
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteThumbVideoRef = useRef(null);
   const timerRef = useRef(null);
+  const recordTimerRef = useRef(null);
   const screenStreamRef = useRef(null);
   const lastCameraDeviceIdRef = useRef(null);
+  const recorderRef = useRef(null);
 
   const [localStream, setLocalStream] = useState(null);
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
-  const [recognitionOn, setRecognitionOn] = useState(true);
+  // Seeded from the Lobby's toggle when arriving via the normal join flow;
+  // falls back to the saved per-device preference if the room URL was
+  // opened directly. Never gated by a Keycloak role — see sslPreference.js.
+  const [recognitionOn, setRecognitionOn] = useState(
+    () => location.state?.sslEnabled ?? loadSslPreference()
+  );
   const [rightPanelTab, setRightPanelTab] = useState("ssl");
   const [signFocus, setSignFocus] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -79,6 +94,11 @@ export default function CallRoom() {
   const [sslHistory, setSslHistory] = useState([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [remoteIsSharing, setRemoteIsSharing] = useState(false);
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [remoteIsRecording, setRemoteIsRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
 
   const { status: signalStatus, role, send, subscribe } = useSignalingSocket(roomCode);
   const { remoteStream, connectionState, replaceVideoTrack } = usePeerConnection({
@@ -96,6 +116,12 @@ export default function CallRoom() {
     if (r === "student") return t("call.student");
     return t("call.participant");
   }
+
+  // Keep the saved preference in sync if it's changed mid-call, so the
+  // in-call toggle and the Lobby toggle always agree next time.
+  useEffect(() => {
+    saveSslPreference(recognitionOn);
+  }, [recognitionOn]);
 
   // Camera/mic acquisition.
   useEffect(() => {
@@ -159,10 +185,27 @@ export default function CallRoom() {
   useEffect(() => {
     const unsubscribe = subscribe((message) => {
       if (message.type === "signing-state") setRemoteIsSigning(Boolean(message.isSigning));
-      if (message.type === "peer-left") setRemoteIsSigning(false);
+      if (message.type === "screen-share-state") setRemoteIsSharing(Boolean(message.sharing));
+      if (message.type === "recording-state") setRemoteIsRecording(Boolean(message.recording));
+      if (message.type === "whiteboard-toggle") setWhiteboardOpen(Boolean(message.open));
+      if (message.type === "peer-left") {
+        setRemoteIsSigning(false);
+        setRemoteIsSharing(false);
+        setRemoteIsRecording(false);
+      }
     });
     return unsubscribe;
   }, [subscribe]);
+
+  // Recording timer, counted only while actively recording.
+  useEffect(() => {
+    if (!isRecording) {
+      setRecordSeconds(0);
+      return;
+    }
+    recordTimerRef.current = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
+    return () => clearInterval(recordTimerRef.current);
+  }, [isRecording]);
 
   // Keep a short, timestamped log of confirmed recognitions for the SSL panel.
   useEffect(() => {
@@ -218,6 +261,10 @@ export default function CallRoom() {
   };
 
   const leave = () => {
+    if (isRecording) {
+      recorderRef.current?.stop().then((blob) => blob && downloadRecording(blob, roomCode));
+      recorderRef.current = null;
+    }
     localStream?.getTracks().forEach((track) => track.stop());
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     navigate("/");
@@ -233,8 +280,14 @@ export default function CallRoom() {
     const camTrack = localStream?.getVideoTracks()[0];
     if (camTrack) replaceVideoTrack(camTrack);
     setIsScreenSharing(false);
+    send({ type: "screen-share-state", sharing: false });
   };
 
+  // Both sides can share independently and at the same time — each peer has
+  // its own outgoing video sender in the connection, so replacing your track
+  // never affects what the other person is currently sending. The only thing
+  // missing without the "sharing" signal below is the other person knowing
+  // it's happening at all.
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
       stopScreenShare();
@@ -249,9 +302,46 @@ export default function CallRoom() {
       // catch that so our toggle state doesn't go stale.
       screenTrack.onended = stopScreenShare;
       setIsScreenSharing(true);
+      send({ type: "screen-share-state", sharing: true });
     } catch {
       // User cancelled the screen/window picker — nothing to do.
     }
+  };
+
+  // Shared, not local: either person opening the whiteboard opens it for
+  // both, the way a real shared whiteboard should behave. The canvas itself
+  // stays mounted at all times (just visually hidden) so drawings survive
+  // toggling it off and back on mid-call.
+  const toggleWhiteboard = () => {
+    setWhiteboardOpen((open) => {
+      const next = !open;
+      send({ type: "whiteboard-toggle", open: next });
+      return next;
+    });
+  };
+
+  // Recording is entirely local to whoever starts it — there's no media
+  // server to record to, so this composites both video feeds onto a canvas
+  // and downloads a .webm when stopped. The other participant is told via
+  // "recording-state" purely for transparency/consent; they can't stop it.
+  const toggleRecording = async () => {
+    if (isRecording) {
+      const blob = await recorderRef.current?.stop();
+      recorderRef.current = null;
+      setIsRecording(false);
+      send({ type: "recording-state", recording: false });
+      if (blob) downloadRecording(blob, roomCode);
+      return;
+    }
+    if (!localStream) return;
+    recorderRef.current = createCallRecorder({
+      localVideoEl: localVideoRef.current,
+      remoteVideoEl: remoteVideoRef.current,
+      localStream,
+      remoteStream,
+    });
+    setIsRecording(true);
+    send({ type: "recording-state", recording: true });
   };
 
   const togglePanel = (tab) => {
@@ -297,7 +387,14 @@ export default function CallRoom() {
             {t("call.youAreSharing")}
           </button>
         )}
+        {(isRecording || remoteIsRecording) && (
+          <span className="pill call-recording-pill">
+            <span className="dot dot-danger" />
+            {isRecording ? `${t("call.recordingIndicator")} · ${formatDuration(recordSeconds)}` : t("call.peerRecording")}
+          </span>
+        )}
         <span className="call-topbar-spacer" />
+        <AccountBadge />
         <button
           className="icon-btn"
           aria-label={t("call.settingsOpen")}
@@ -309,16 +406,26 @@ export default function CallRoom() {
       </header>
 
       <div className="call-body">
-        <div className={`call-video-area${signFocus ? " sign-focus" : ""}`}>
-          <div className="call-remote">
+        <div className={`call-video-area${signFocus ? " sign-focus" : ""}${whiteboardOpen ? " whiteboard-open" : ""}`}>
+          {/* Both stay mounted at all times (toggled with `hidden`, not
+              conditional rendering) so the whiteboard's canvas bitmap and the
+              remote <video>'s srcObject both survive switching back and forth. */}
+          <div className="call-remote" hidden={whiteboardOpen}>
             {remoteStream ? (
               <>
                 <video ref={remoteVideoRef} autoPlay playsInline />
-                {remoteIsSigning && (
-                  <span className="call-signing-badge">
-                    <span className="dot" /> {t("call.signingBadge")}
-                  </span>
-                )}
+                <div className="call-remote-badges">
+                  {remoteIsSigning && (
+                    <span className="call-signing-badge">
+                      <span className="dot" /> {t("call.signingBadge")}
+                    </span>
+                  )}
+                  {remoteIsSharing && (
+                    <span className="call-signing-badge call-sharing-badge">
+                      <span className="dot" /> {t("call.peerSharing")}
+                    </span>
+                  )}
+                </div>
                 <button
                   className="sign-focus-btn"
                   aria-pressed={signFocus}
@@ -339,7 +446,11 @@ export default function CallRoom() {
             )}
           </div>
 
-          {a11y.captionsOn && (
+          <div className="call-whiteboard-stage" hidden={!whiteboardOpen}>
+            <Whiteboard send={send} subscribe={subscribe} t={t} />
+          </div>
+
+          {a11y.captionsOn && !whiteboardOpen && (
             <div className={`call-caption caption-bg-${a11y.captionBg}`} style={{ "--caption-font-size": CAPTION_SIZES[a11y.captionSize] }}>
               <span className="caption-tag">{t("call.captionTag")}</span>
               <p>{t("call.captionPlaceholder")}</p>
@@ -347,6 +458,22 @@ export default function CallRoom() {
           )}
 
           <div className="call-thumbnails">
+            {whiteboardOpen && remoteStream && (
+              <div className="call-local call-remote-thumb">
+                <video
+                  ref={(el) => {
+                    remoteThumbVideoRef.current = el;
+                    if (el && remoteStream) el.srcObject = remoteStream;
+                  }}
+                  autoPlay
+                  playsInline
+                />
+                <span className="call-local-tag">
+                  <span className={`dot ${statusKey === "connected" ? "dot-ok" : "dot-warn"}`} />
+                  {otherRoleLabel}
+                </span>
+              </div>
+            )}
             <div className={`call-local${a11y.selfViewSize === "large" ? " self-view-large" : ""}`}>
               {cameraOn ? (
                 <video
@@ -539,6 +666,24 @@ export default function CallRoom() {
           aria-label={isScreenSharing ? t("call.stopScreenShare") : t("call.screenShareToggle")}
         >
           <ShareIcon />
+        </button>
+        <button
+          className="dock-btn dock-btn-accent"
+          aria-pressed={whiteboardOpen}
+          onClick={toggleWhiteboard}
+          title={t("call.whiteboardToggle")}
+          aria-label={t("call.whiteboardToggle")}
+        >
+          <WhiteboardIcon />
+        </button>
+        <button
+          className={`dock-btn${isRecording ? " dock-btn-recording" : ""}`}
+          aria-pressed={isRecording}
+          onClick={toggleRecording}
+          title={isRecording ? t("call.stopRecording") : t("call.startRecording")}
+          aria-label={isRecording ? t("call.stopRecording") : t("call.startRecording")}
+        >
+          <RecordIcon />
         </button>
         <button
           className="dock-btn dock-btn-ssl"

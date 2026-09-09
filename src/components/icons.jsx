@@ -81,6 +81,25 @@ export function LeaveIcon(props) {
   );
 }
 
+export function WhiteboardIcon(props) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="2.5" y="4" width="19" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M8 17.5l1.3-4 5-5 2.7 2.7-5 5z" fill="currentColor" />
+      <rect x="10.5" y="19.5" width="3" height="2" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function RecordIcon(props) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="12" cy="12" r="5" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function SettingsIcon(props) {
   return (
     <svg {...base} {...props}>
