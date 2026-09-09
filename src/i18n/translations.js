@@ -24,6 +24,8 @@ export const translations = {
       joinDesc: "Enter the code your teacher gave you.",
       joinBtn: "Join Class",
       roomCodePlaceholder: "Room code",
+      signIn: "Sign in",
+      signOut: "Sign out",
     },
     lobby: {
       back: "Back to home",
@@ -135,6 +137,8 @@ export const translations = {
       joinDesc: "ඔබේ ගුරුවරයා දුන් කේතය ඇතුළත් කරන්න.",
       joinBtn: "පන්තියට එකතු වන්න",
       roomCodePlaceholder: "කාමර කේතය",
+      signIn: "පිවිසෙන්න",
+      signOut: "ඉවත් වන්න",
     },
     lobby: {
       back: "මුල් පිටුවට",
