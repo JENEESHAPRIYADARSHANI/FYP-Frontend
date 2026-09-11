@@ -17,7 +17,6 @@ const FEATURES_PER_HAND = LANDMARKS_PER_HAND * COORDS_PER_LANDMARK; // 63
 const WINDOW_SIZE = 80; // SEQUENCE_LENGTH the model was trained on
 const SEND_INTERVAL_MS = 400; // throttle inference requests
 const MIN_FRAMES_TO_SEND = 15; // don't bother predicting on a near-empty window
-const CONFIDENCE_THRESHOLD = 0.75;
 const SMOOTHING_STREAK = 2; // consecutive agreeing predictions before display
 
 let handLandmarkerPromise = null;
@@ -63,15 +62,18 @@ function extractFrameFeatures(result) {
 // window, and streams it to /ws/landmarks for classification.
 //
 // Runs continuously rather than on a manual trigger (per project decision),
-// so noise is filtered on the way out: predictions below CONFIDENCE_THRESHOLD
-// are dropped, and a sign must repeat SMOOTHING_STREAK times in a row before
-// it's surfaced, to avoid flicker from an unsegmented, always-on window.
+// so noise is filtered on the way out: the backend marks a window
+// `recognized: false` when it doesn't confidently match any trained sign
+// (low softmax confidence and/or too far from every class centroid — see
+// model_service.py), those are dropped, and a sign must then repeat
+// SMOOTHING_STREAK times in a row before it's surfaced, to avoid flicker
+// from an unsegmented, always-on window.
 export function useLandmarkStream({ videoRef, active }) {
   const wsRef = useRef(null);
   const bufferRef = useRef([]);
   const streakRef = useRef({ classId: null, count: 0 });
   const isSigningRef = useRef(false);
-  const [prediction, setPrediction] = useState(null); // { sign, confidence }
+  const [prediction, setPrediction] = useState(null); // { sign, signSi, confidence }
   const [isSigning, setIsSigning] = useState(false); // hands currently detected in frame
 
   useEffect(() => {
@@ -88,7 +90,9 @@ export function useLandmarkStream({ videoRef, active }) {
       if (message.type !== "prediction") return;
 
       const streak = streakRef.current;
-      if (message.confidence < CONFIDENCE_THRESHOLD) {
+      if (!message.recognized) {
+        // Backend didn't confidently match any trained sign — let the
+        // streak lapse rather than holding a stale prediction up.
         streakRef.current = { classId: null, count: 0 };
         return;
       }
@@ -100,7 +104,11 @@ export function useLandmarkStream({ videoRef, active }) {
       }
 
       if (streakRef.current.count >= SMOOTHING_STREAK) {
-        setPrediction({ sign: message.sign, confidence: message.confidence });
+        setPrediction({
+          sign: message.sign,
+          signSi: message.sign_si,
+          confidence: message.confidence,
+        });
       }
     };
 

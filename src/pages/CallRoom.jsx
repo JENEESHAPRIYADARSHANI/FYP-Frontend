@@ -592,6 +592,9 @@ export default function CallRoom() {
                     <div className="ssl-output-card">
                       <span className="ssl-output-eyebrow">{t("call.recognizedSign")}</span>
                       <span className="ssl-output-sign">"{prediction.sign}"</span>
+                      {prediction.signSi && (
+                        <span className="ssl-output-sign-si">{prediction.signSi}</span>
+                      )}
                       <div className="ssl-confidence-track">
                         <div
                           className="ssl-confidence-fill"
@@ -614,7 +617,10 @@ export default function CallRoom() {
                       <div className="ssl-history-list">
                         {sslHistory.map((entry) => (
                           <div className="ssl-history-row" key={entry.at}>
-                            <span>"{entry.sign}"</span>
+                            <span>
+                              "{entry.sign}"
+                              {entry.signSi && <em>{entry.signSi}</em>}
+                            </span>
                             <time>{entry.time}</time>
                           </div>
                         ))}
