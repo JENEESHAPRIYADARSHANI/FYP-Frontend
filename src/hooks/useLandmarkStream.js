@@ -18,6 +18,8 @@ const WINDOW_SIZE = 80; // SEQUENCE_LENGTH the model was trained on
 const SEND_INTERVAL_MS = 400; // throttle inference requests
 const MIN_FRAMES_TO_SEND = 15; // don't bother predicting on a near-empty window
 const SMOOTHING_STREAK = 2; // consecutive agreeing predictions before display
+const MISS_FRAMES_TO_CLEAR = 15; // ~consecutive no-hand video frames before clearing a shown sign
+const MISS_MESSAGES_TO_CLEAR = 3; // ~consecutive unrecognized inferences before clearing a shown sign
 
 let handLandmarkerPromise = null;
 function getHandLandmarker() {
@@ -62,16 +64,22 @@ function extractFrameFeatures(result) {
 // window, and streams it to /ws/landmarks for classification.
 //
 // Runs continuously rather than on a manual trigger (per project decision),
-// so noise is filtered on the way out: the backend marks a window
+// so noise is filtered on both ends: the backend marks a window
 // `recognized: false` when it doesn't confidently match any trained sign
 // (low softmax confidence and/or too far from every class centroid — see
 // model_service.py), those are dropped, and a sign must then repeat
 // SMOOTHING_STREAK times in a row before it's surfaced, to avoid flicker
-// from an unsegmented, always-on window.
+// from an unsegmented, always-on window. Symmetrically, a shown sign is
+// cleared back to "nothing recognized" once hands leave the frame or
+// recognition stops matching for a few beats in a row — without this, the
+// panel would keep displaying the first thing it ever recognized for the
+// rest of the call, long after it stopped being true.
 export function useLandmarkStream({ videoRef, active }) {
   const wsRef = useRef(null);
   const bufferRef = useRef([]);
   const streakRef = useRef({ classId: null, count: 0 });
+  const missFramesRef = useRef(0);
+  const missMessagesRef = useRef(0);
   const isSigningRef = useRef(false);
   const [prediction, setPrediction] = useState(null); // { sign, signSi, confidence }
   const [isSigning, setIsSigning] = useState(false); // hands currently detected in frame
@@ -82,20 +90,28 @@ export function useLandmarkStream({ videoRef, active }) {
     let cancelled = false;
     let rafId;
     let sendTimerId;
-    const ws = new WebSocket(`${SIGNALING_WS_BASE}/ws/landmarks`);
-    wsRef.current = ws;
+    let ws;
 
-    ws.onmessage = (event) => {
+    function handlePredictionMessage(event) {
       const message = JSON.parse(event.data);
       if (message.type !== "prediction") return;
 
       const streak = streakRef.current;
       if (!message.recognized) {
         // Backend didn't confidently match any trained sign — let the
-        // streak lapse rather than holding a stale prediction up.
+        // streak lapse rather than holding a stale prediction up. A single
+        // miss doesn't clear the panel (that would flicker on ordinary
+        // gaps between windows); several in a row means recognition has
+        // genuinely gone quiet, so the last shown sign stops being true
+        // and needs to go away rather than sit there indefinitely.
         streakRef.current = { classId: null, count: 0 };
+        missMessagesRef.current += 1;
+        if (missMessagesRef.current >= MISS_MESSAGES_TO_CLEAR) {
+          setPrediction(null);
+        }
         return;
       }
+      missMessagesRef.current = 0;
 
       if (streak.classId === message.class_id) {
         streak.count += 1;
@@ -110,7 +126,20 @@ export function useLandmarkStream({ videoRef, active }) {
           confidence: message.confidence,
         });
       }
-    };
+    }
+
+    // Deferred by one tick so React StrictMode's dev-only mount -> cleanup ->
+    // mount double-invoke never opens a real connection for the phantom
+    // first mount — see useSignalingSocket.js for the full explanation of
+    // why (same underlying issue, found while chasing a "room already full"
+    // bug on that socket). Harmless here either way since /ws/landmarks has
+    // no peer cap, but avoiding a pointless duplicate connection either way.
+    const openTimer = setTimeout(() => {
+      if (cancelled) return;
+      ws = new WebSocket(`${SIGNALING_WS_BASE}/ws/landmarks`);
+      wsRef.current = ws;
+      ws.onmessage = handlePredictionMessage;
+    }, 0);
 
     getHandLandmarker().then((handLandmarker) => {
       if (cancelled) return;
@@ -130,9 +159,18 @@ export function useLandmarkStream({ videoRef, active }) {
             setIsSigning(anyHand);
           }
 
-          if (!anyHand) {
-            // Idle: let the streak lapse instead of holding a stale sign up.
+          if (anyHand) {
+            missFramesRef.current = 0;
+          } else {
+            // Idle: let the streak lapse instead of holding a stale sign up,
+            // and clear whatever was last shown once hands have been out of
+            // frame for a bit — a shown sign should mean "this is what I'm
+            // seeing right now," not "this is the last thing I ever saw."
             streakRef.current = { classId: null, count: 0 };
+            missFramesRef.current += 1;
+            if (missFramesRef.current >= MISS_FRAMES_TO_CLEAR) {
+              setPrediction(null);
+            }
           }
         }
         rafId = requestAnimationFrame(detectLoop);
@@ -143,7 +181,7 @@ export function useLandmarkStream({ videoRef, active }) {
         const buffer = bufferRef.current;
         const hasHandInBuffer = buffer.some((frame) => frame.some((v) => v !== 0));
         if (
-          ws.readyState === WebSocket.OPEN &&
+          ws?.readyState === WebSocket.OPEN &&
           buffer.length >= MIN_FRAMES_TO_SEND &&
           hasHandInBuffer
         ) {
@@ -154,12 +192,15 @@ export function useLandmarkStream({ videoRef, active }) {
 
     return () => {
       cancelled = true;
+      clearTimeout(openTimer);
       cancelAnimationFrame(rafId);
       clearInterval(sendTimerId);
-      ws.close();
+      ws?.close();
       wsRef.current = null;
       bufferRef.current = [];
       streakRef.current = { classId: null, count: 0 };
+      missFramesRef.current = 0;
+      missMessagesRef.current = 0;
       isSigningRef.current = false;
       setIsSigning(false);
     };

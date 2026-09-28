@@ -10,6 +10,8 @@ import AccountBadge from "../components/AccountBadge.jsx";
 import { loadSslPreference, saveSslPreference } from "../utils/sslPreference.js";
 import { createCallRecorder, downloadRecording } from "../services/recordingService.js";
 import Whiteboard from "../components/Whiteboard.jsx";
+import { useSpeechCaptions, speechRecognitionSupported } from "../hooks/useSpeechCaptions.js";
+import { speakSinhala } from "../services/speechService.js";
 import {
   MicIcon,
   CameraIcon,
@@ -99,6 +101,14 @@ export default function CallRoom() {
   const [isRecording, setIsRecording] = useState(false);
   const [remoteIsRecording, setRemoteIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
+  // Teacher hears the student's signs spoken aloud (voiceOn), and the student
+  // sees the teacher's speech as live captions (liveCaption). One direction
+  // each way by design — see the two effects below.
+  const [voiceOn, setVoiceOn] = useState(true);
+  const [liveCaption, setLiveCaption] = useState(null); // { text, at }
+  const [peerSign, setPeerSign] = useState(null); // { sign, signSi, at }
+  const voiceOnRef = useRef(true);
+  const lastSentSignRef = useRef(null);
 
   const { status: signalStatus, role, send, subscribe } = useSignalingSocket(roomCode);
   const { remoteStream, connectionState, replaceVideoTrack } = usePeerConnection({
@@ -183,12 +193,61 @@ export default function CallRoom() {
   }, [isSigning, send]);
 
   useEffect(() => {
+    voiceOnRef.current = voiceOn;
+    if (!voiceOn) window.speechSynthesis?.cancel();
+  }, [voiceOn]);
+
+  // Student -> teacher: send each newly recognized sign once. `prediction`
+  // is re-created on every inference while the same sign is held, so we
+  // compare against the last sent sign rather than firing per update.
+  useEffect(() => {
+    if (role !== "student") return;
+    if (!prediction) {
+      lastSentSignRef.current = null;
+      return;
+    }
+    if (lastSentSignRef.current === prediction.sign) return;
+    lastSentSignRef.current = prediction.sign;
+    send({ type: "sign-recognized", sign: prediction.sign, signSi: prediction.signSi });
+  }, [prediction, role, send]);
+
+  // Teacher -> student: transcribe the teacher's microphone in Sinhala and
+  // relay the text as it's spoken (interim results too, so captions keep up).
+  useSpeechCaptions({
+    active: role === "teacher" && micOn && Boolean(localStream),
+    lang: "si-LK",
+    onText: (text, isFinal) => send({ type: "caption", text, final: isFinal }),
+  });
+
+  // Captions and signs are momentary — fade them out once speech/signing stops.
+  useEffect(() => {
+    if (!liveCaption) return;
+    const timer = setTimeout(() => setLiveCaption(null), 5000);
+    return () => clearTimeout(timer);
+  }, [liveCaption]);
+
+  useEffect(() => {
+    if (!peerSign) return;
+    const timer = setTimeout(() => setPeerSign(null), 5000);
+    return () => clearTimeout(timer);
+  }, [peerSign]);
+
+  useEffect(() => {
     const unsubscribe = subscribe((message) => {
+      if (message.type === "sign-recognized") {
+        setPeerSign({ sign: message.sign, signSi: message.signSi, at: Date.now() });
+        if (voiceOnRef.current) speakSinhala(message.signSi || message.sign);
+      }
+      if (message.type === "caption") {
+        setLiveCaption({ text: message.text, at: Date.now() });
+      }
       if (message.type === "signing-state") setRemoteIsSigning(Boolean(message.isSigning));
       if (message.type === "screen-share-state") setRemoteIsSharing(Boolean(message.sharing));
       if (message.type === "recording-state") setRemoteIsRecording(Boolean(message.recording));
       if (message.type === "whiteboard-toggle") setWhiteboardOpen(Boolean(message.open));
       if (message.type === "peer-left") {
+        setLiveCaption(null);
+        setPeerSign(null);
         setRemoteIsSigning(false);
         setRemoteIsSharing(false);
         setRemoteIsRecording(false);
@@ -452,8 +511,16 @@ export default function CallRoom() {
 
           {a11y.captionsOn && !whiteboardOpen && (
             <div className={`call-caption caption-bg-${a11y.captionBg}`} style={{ "--caption-font-size": CAPTION_SIZES[a11y.captionSize] }}>
-              <span className="caption-tag">{t("call.captionTag")}</span>
-              <p>{t("call.captionPlaceholder")}</p>
+              <span className="caption-tag">
+                {role === "teacher" ? t("call.peerSigned") : t("call.captionTag")}
+              </span>
+              <p>
+                {role === "teacher"
+                  ? peerSign
+                    ? `${peerSign.signSi || peerSign.sign}${peerSign.signSi ? ` (${peerSign.sign})` : ""}`
+                    : t("call.signVoicePlaceholder")
+                  : liveCaption?.text ?? t("call.captionPlaceholder")}
+              </p>
             </div>
           )}
 
@@ -462,8 +529,12 @@ export default function CallRoom() {
               <div className="call-local call-remote-thumb">
                 <video
                   ref={(el) => {
+                    // Same reassign-on-every-render guard as the local
+                    // camera tile below — see that comment.
                     remoteThumbVideoRef.current = el;
-                    if (el && remoteStream) el.srcObject = remoteStream;
+                    if (el && remoteStream && el.srcObject !== remoteStream) {
+                      el.srcObject = remoteStream;
+                    }
                   }}
                   autoPlay
                   playsInline
@@ -483,8 +554,20 @@ export default function CallRoom() {
                     // DOM-level srcObject binding — a plain ref only fires on
                     // mount, with nothing to rebind it afterwards, so set it
                     // right here rather than relying on a separate effect.
+                    // Guarded on identity: this inline callback gets a new
+                    // function reference every render, so React re-invokes it
+                    // on every re-render of CallRoom, not just on mount/
+                    // remount — and while sign detection is running, that's
+                    // very often (isSigning flips as hands enter/leave frame,
+                    // prediction updates every ~400ms). Reassigning
+                    // srcObject to the *same* stream on an already-playing
+                    // video briefly flashes/blacks it out in Chromium, which
+                    // is what showed up as flicker during detection. Only
+                    // assign when the stream actually changed.
                     localVideoRef.current = el;
-                    if (el && localStream) el.srcObject = localStream;
+                    if (el && localStream && el.srcObject !== localStream) {
+                      el.srcObject = localStream;
+                    }
                   }}
                   autoPlay
                   muted
@@ -587,6 +670,26 @@ export default function CallRoom() {
                       onClick={() => setRecognitionOn((v) => !v)}
                     />
                   </div>
+
+                  {role === "teacher" && (
+                    <>
+                      <div className="panel-row">
+                        <div className="panel-row-label">
+                          <strong>{t("call.voiceOutput")}</strong>
+                          <span>{voiceOn ? t("call.on") : t("call.off")}</span>
+                        </div>
+                        <button
+                          className="switch"
+                          aria-pressed={voiceOn}
+                          aria-label={t("call.voiceOutput")}
+                          onClick={() => setVoiceOn((v) => !v)}
+                        />
+                      </div>
+                      {!speechRecognitionSupported && (
+                        <div className="ssl-empty">{t("call.captionsUnsupported")}</div>
+                      )}
+                    </>
+                  )}
 
                   {prediction ? (
                     <div className="ssl-output-card">
