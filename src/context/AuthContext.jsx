@@ -10,6 +10,13 @@ function readUser(kc) {
     name: kc.tokenParsed.name || kc.tokenParsed.preferred_username,
     email: kc.tokenParsed.email,
     roles: kc.tokenParsed.realm_access?.roles ?? [],
+    // Only present for accounts that signed in via Google — imported into
+    // Keycloak by the Google identity provider's "picture-importer"
+    // attribute mapper, then carried into the token by the standard OIDC
+    // "profile" scope's built-in picture mapper. A native Keycloak account
+    // (no Google link) just won't have this claim, which is why every place
+    // that uses it (UserAvatar) falls back to an initial letter.
+    picture: kc.tokenParsed.picture,
   };
 }
 

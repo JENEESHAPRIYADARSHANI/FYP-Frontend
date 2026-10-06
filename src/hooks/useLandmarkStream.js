@@ -1,73 +1,118 @@
 import { useEffect, useRef, useState } from "react";
-import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
+import { FilesetResolver, HandLandmarker, PoseLandmarker } from "@mediapipe/tasks-vision";
 import { SIGNALING_WS_BASE } from "../services/api.js";
 
 // Must match the version actually installed (package-lock.json) so the WASM
 // binary fetched from the CDN matches the JS bindings bundled by Vite.
 const TASKS_VISION_VERSION = "0.10.35";
 const WASM_BASE_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
+// Same "latest" float16 assets ssl_features.py's own MODEL_URLS points training
+// at (see backend/app/services/ssl_features.py) — kept identical on purpose so
+// the live app's landmark detector matches what the models were trained on.
 const HAND_MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task";
+const POSE_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
-// Must match SSL_Research_Project/configuration/landmark_config.py exactly:
-// 21 landmarks x (x, y, z) x 2 hands, left hand first, zero-filled if absent.
-const LANDMARKS_PER_HAND = 21;
-const COORDS_PER_LANDMARK = 3;
-const FEATURES_PER_HAND = LANDMARKS_PER_HAND * COORDS_PER_LANDMARK; // 63
-const WINDOW_SIZE = 80; // SEQUENCE_LENGTH the model was trained on
+// The 13 pose points the word model was trained on (ssl_features.py POSE_IDX):
+// nose, left eye, right eye, left ear, right ear, mouth left, mouth right,
+// left shoulder, right shoulder, left elbow, right elbow, left wrist, right wrist.
+const POSE_IDX = [0, 2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+const WINDOW_SIZE = 72; // rolling buffer of raw frames sent per window (~2.4s at the throttle below)
+// The new models resample by real elapsed time (rel_t), not by frame count,
+// so this doesn't need to hit any exact fps the way the old model did — but
+// it still needs *a* cap, since running two MediaPipe models (pose + hands)
+// on every single animation-frame tick (60+/s) would needlessly compete with
+// WebRTC's own encode/decode for CPU during a call.
+const SAMPLE_INTERVAL_MS = 40; // ~25 samples/s cap
 const SEND_INTERVAL_MS = 400; // throttle inference requests
 const MIN_FRAMES_TO_SEND = 15; // don't bother predicting on a near-empty window
 const SMOOTHING_STREAK = 2; // consecutive agreeing predictions before display
 const MISS_FRAMES_TO_CLEAR = 15; // ~consecutive no-hand video frames before clearing a shown sign
 const MISS_MESSAGES_TO_CLEAR = 3; // ~consecutive unrecognized inferences before clearing a shown sign
 
-let handLandmarkerPromise = null;
-function getHandLandmarker() {
-  if (!handLandmarkerPromise) {
-    handLandmarkerPromise = FilesetResolver.forVisionTasks(WASM_BASE_URL).then(
-      (vision) =>
+let landmarkersPromise = null;
+function getLandmarkers() {
+  if (!landmarkersPromise) {
+    landmarkersPromise = FilesetResolver.forVisionTasks(WASM_BASE_URL).then(async (vision) => {
+      const [handLandmarker, poseLandmarker] = await Promise.all([
         HandLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: "GPU" },
           runningMode: "VIDEO",
           numHands: 2,
-        })
-    );
+        }),
+        PoseLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate: "GPU" },
+          runningMode: "VIDEO",
+          numPoses: 1,
+        }),
+      ]);
+      return { handLandmarker, poseLandmarker };
+    });
+    // Both the WASM binary and the two model files load from external CDNs
+    // (see WASM_BASE_URL/HAND_MODEL_URL/POSE_MODEL_URL above). If any fetch
+    // fails — a firewall, an ad-blocker, or just no route to that host — this
+    // promise rejects, detectLoop below never starts, and that failure would
+    // otherwise be completely silent: the socket still connects, the call
+    // still looks normal, and recognition just never produces anything,
+    // forever, with nothing in the console to say why. Logging it here at
+    // least makes that failure visible. Reset the cached promise on failure
+    // so a retry (e.g. rejoining the call after the network recovers) can
+    // try loading again instead of being stuck replaying the same rejected
+    // promise.
+    landmarkersPromise.catch((err) => {
+      console.error(
+        "useLandmarkStream: failed to load MediaPipe pose/hand landmarkers (sign recognition will not work this session):",
+        err
+      );
+      landmarkersPromise = null;
+    });
   }
-  return handLandmarkerPromise;
+  return landmarkersPromise;
 }
 
-const EMPTY_HAND = new Array(FEATURES_PER_HAND).fill(0);
+// Captures the raw pose + hand landmarks straight from MediaPipe, with no
+// wrist-relative math and no mirroring applied client side. The backend's
+// ssl_features.py/hand_features.py (the exact files the models were trained
+// against) do all of that normalisation server side from this raw data — see
+// app/services/sign_models.py. This also means there's nothing here that can
+// silently drift from what the models actually expect: the only feature math
+// that exists lives in one place, in Python, shared with training.
+//
+// Landmark detection runs on the raw, unmirrored camera stream (the CSS
+// mirror on the self-view <video> is a display-only transform, it doesn't
+// touch the pixels MediaPipe sees) — the training videos were never flipped
+// either (see ssl_features.py's extract_video/LandmarkExtractor, no cv2.flip
+// anywhere), so no manual 1-x correction is applied here, unlike the old
+// hand-only model this replaced.
+function captureFrame(handResult, poseResult) {
+  let pose = null;
+  const poseLm = poseResult.landmarks?.[0];
+  if (poseLm) {
+    pose = POSE_IDX.map((i) => [poseLm[i].x, poseLm[i].y]);
+  }
 
-function extractFrameFeatures(result) {
-  let left = EMPTY_HAND;
-  let right = EMPTY_HAND;
+  const hands = [];
   let anyHand = false;
-
-  result.landmarks?.forEach((landmarks, i) => {
-    const label = result.handedness?.[i]?.[0]?.categoryName; // "Left" | "Right"
-    const coords = landmarks.flatMap((point) => [point.x, point.y, point.z]);
-    if (label === "Left") {
-      left = coords;
-      anyHand = true;
-    } else if (label === "Right") {
-      right = coords;
-      anyHand = true;
-    }
+  handResult.landmarks?.forEach((landmarks, i) => {
+    const handedness = handResult.handedness?.[i]?.[0]?.categoryName; // "Left" | "Right"
+    if (!handedness) return;
+    hands.push({ landmarks: landmarks.map((p) => [p.x, p.y, p.z]), handedness });
+    anyHand = true;
   });
 
-  return { frame: [...left, ...right], anyHand };
+  return { frame: { pose, hands }, anyHand };
 }
 
-// Captures hand landmarks from a live <video> element (the raw, unmirrored
-// frame — mirroring is applied only via CSS for display, so detection stays
-// consistent with how the training dataset was extracted), buffers a rolling
-// window, and streams it to /ws/landmarks for classification.
+// Captures pose + hand landmarks from a live <video> element, buffers a
+// rolling window of raw frames, and streams it to /ws/landmarks for
+// classification against both the word model and the hand model.
 //
 // Runs continuously rather than on a manual trigger (per project decision),
 // so noise is filtered on both ends: the backend marks a window
-// `recognized: false` when it doesn't confidently match any trained sign
-// (low softmax confidence and/or too far from every class centroid — see
-// model_service.py), those are dropped, and a sign must then repeat
+// `recognized: false` when neither model confidently matches a trained sign
+// (see sign_models.py), those are dropped, and a sign must then repeat
 // SMOOTHING_STREAK times in a row before it's surfaced, to avoid flicker
 // from an unsegmented, always-on window. Symmetrically, a shown sign is
 // cleared back to "nothing recognized" once hands leave the frame or
@@ -98,12 +143,12 @@ export function useLandmarkStream({ videoRef, active }) {
 
       const streak = streakRef.current;
       if (!message.recognized) {
-        // Backend didn't confidently match any trained sign — let the
-        // streak lapse rather than holding a stale prediction up. A single
-        // miss doesn't clear the panel (that would flicker on ordinary
-        // gaps between windows); several in a row means recognition has
-        // genuinely gone quiet, so the last shown sign stops being true
-        // and needs to go away rather than sit there indefinitely.
+        // Neither model confidently matched a trained sign — let the streak
+        // lapse rather than holding a stale prediction up. A single miss
+        // doesn't clear the panel (that would flicker on ordinary gaps
+        // between windows); several in a row means recognition has
+        // genuinely gone quiet, so the last shown sign stops being true and
+        // needs to go away rather than sit there indefinitely.
         streakRef.current = { classId: null, count: 0 };
         missMessagesRef.current += 1;
         if (missMessagesRef.current >= MISS_MESSAGES_TO_CLEAR) {
@@ -141,17 +186,22 @@ export function useLandmarkStream({ videoRef, active }) {
       ws.onmessage = handlePredictionMessage;
     }, 0);
 
-    getHandLandmarker().then((handLandmarker) => {
+    getLandmarkers().then(({ handLandmarker, poseLandmarker }) => {
       if (cancelled) return;
+
+      let lastSampleAt = 0;
 
       const detectLoop = () => {
         const video = videoRef.current;
-        if (video && video.readyState >= 2) {
-          const result = handLandmarker.detectForVideo(video, performance.now());
-          const { frame, anyHand } = extractFrameFeatures(result);
+        const now = performance.now();
+        if (video && video.readyState >= 2 && now - lastSampleAt >= SAMPLE_INTERVAL_MS) {
+          lastSampleAt = now;
+          const handResult = handLandmarker.detectForVideo(video, now);
+          const poseResult = poseLandmarker.detectForVideo(video, now);
+          const { frame, anyHand } = captureFrame(handResult, poseResult);
 
           const buffer = bufferRef.current;
-          buffer.push(frame);
+          buffer.push({ t: now / 1000, ...frame });
           if (buffer.length > WINDOW_SIZE) buffer.shift();
 
           if (anyHand !== isSigningRef.current) {
@@ -179,7 +229,7 @@ export function useLandmarkStream({ videoRef, active }) {
 
       sendTimerId = setInterval(() => {
         const buffer = bufferRef.current;
-        const hasHandInBuffer = buffer.some((frame) => frame.some((v) => v !== 0));
+        const hasHandInBuffer = buffer.some((f) => f.hands.length > 0);
         if (
           ws?.readyState === WebSocket.OPEN &&
           buffer.length >= MIN_FRAMES_TO_SEND &&

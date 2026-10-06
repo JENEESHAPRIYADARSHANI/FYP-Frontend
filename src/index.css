@@ -231,6 +231,21 @@ button:disabled {
   color: var(--ink-soft);
 }
 
+.copy-link-btn {
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.copy-link-btn svg {
+  width: 0.9em;
+  height: 0.9em;
+}
+
+.copy-link-btn:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
 .dot {
   width: 7px;
   height: 7px;

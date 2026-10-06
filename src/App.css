@@ -28,6 +28,24 @@
   gap: 0.6rem;
 }
 
+/* Below this, logo + brand name + theme/language/account controls no longer
+   fit on one row and were overflowing the viewport horizontally instead of
+   wrapping — drop the controls to their own row instead. */
+@media (max-width: 440px) {
+  .home-brand {
+    flex-wrap: wrap;
+    row-gap: 0.75rem;
+  }
+  .home-brand-spacer {
+    display: none;
+  }
+  .header-controls {
+    flex-wrap: wrap;
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
 .account-menu {
   position: relative;
 }
@@ -316,6 +334,34 @@
   border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
+/* Shown instead of .avatar-placeholder once we actually know who someone is
+   (a profile picture, or their initial) — the plain blank circle above stays
+   as the fallback for the split second before that identity is known. */
+.call-off-avatar-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--blue);
+  color: #fff;
+  font-weight: 700;
+  font-size: 2rem;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.user-avatar-img {
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+/* The call room's camera-off avatars sit on a dark video background and
+   want the same subtle ring .avatar-placeholder already uses there — the
+   plain AccountBadge avatar (top-right corner, light background) doesn't. */
+.call-off-avatar-img {
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
 .lobby-error {
   position: absolute;
   inset: 0;
@@ -570,10 +616,12 @@
   overflow: hidden;
 }
 
-.call-remote video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.call-remote-camera-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .call-whiteboard-stage {
@@ -813,10 +861,18 @@
   width: 280px;
 }
 
-.call-local video {
+.call-local video,
+.call-remote video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* Mirrors whichever tile is currently showing YOUR OWN camera — tied to the
+   feed's identity (see renderLocalFeed in CallRoom.jsx), not to a specific
+   container, since swapping can put your own video in either the small
+   corner tile or the big stage. The remote feed is never mirrored. */
+.mirrored {
   transform: scaleX(-1);
 }
 
@@ -845,6 +901,88 @@
 .call-local-tag .dot {
   width: 6px;
   height: 6px;
+}
+
+/* ---------- Swap views / resize (Zoom-style pin, for a 2-person call) ---------- */
+
+.swap-view-btn {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: var(--call-overlay);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.swap-view-btn:hover,
+.swap-view-btn:focus-visible {
+  opacity: 1;
+  background: var(--blue);
+}
+
+.swap-view-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Bottom-right on the main stage — top-left/right there are already taken by
+   the activity badges and Sign Focus. */
+.swap-view-btn-main {
+  bottom: 1rem;
+  right: 1rem;
+}
+
+/* Top-right on the corner tile: top-left holds the resize handle, and
+   bottom-left already holds the name tag. */
+.swap-view-btn-pip {
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+}
+
+.swap-view-btn-pip svg {
+  width: 13px;
+  height: 13px;
+}
+
+.pip-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+/* A small folded-corner mark, drawn with a border trick rather than an SVG —
+   the universal "drag here to resize" affordance. */
+.pip-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 10px;
+  height: 10px;
+  border-top: 2px solid rgba(255, 255, 255, 0.75);
+  border-left: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 3px 0 0 0;
+}
+
+.pip-resize-handle:hover::before,
+.pip-resize-handle:focus-visible::before {
+  border-color: #fff;
 }
 
 /* ---------- Control bar ---------- */
@@ -942,6 +1080,7 @@
 }
 
 .call-panel-tab {
+  position: relative;
   border: none;
   background: transparent;
   color: var(--ink-soft);
@@ -988,7 +1127,7 @@
 .panel-sub {
   font-size: var(--text-xs);
   color: var(--ink-soft);
-  margin-top: -0.6rem;
+  margin-top: 0.2rem;
 }
 
 .panel-row {
@@ -1001,10 +1140,29 @@
   padding: 0.7rem 0.85rem;
 }
 
+.participant-avatar {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--blue);
+  color: #fff;
+  font-weight: 700;
+  font-size: var(--text-sm);
+}
+
 .panel-row-label {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  /* Grows to fill the row up to the status dot, so rename-control's own
+     space-between (below) can actually push its button flush to that far
+     right edge instead of sitting right next to the name. */
+  flex: 1;
+  min-width: 0;
 }
 
 .panel-row-label strong {
@@ -1014,6 +1172,93 @@
 .panel-row-label span {
   font-size: var(--text-2xs);
   color: var(--ink-soft);
+}
+
+/* ---------- Rename control (your own name, participant list) ---------- */
+
+.rename-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.3rem;
+  width: 100%;
+}
+
+.rename-control strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rename-menu-btn {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+}
+
+.rename-menu-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.rename-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  /* Anchored to the right, under the trigger button — which now sits at the
+     row's right edge, not next to the name on the left anymore. */
+  right: 0;
+  z-index: 5;
+  min-width: 140px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
+  padding: 0.35rem;
+}
+
+.rename-dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.65rem;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.rename-dropdown button:hover {
+  background: var(--bg);
+}
+
+.rename-form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 100px;
+  padding: 0.35rem 0.5rem;
+  font-size: var(--text-sm);
+}
+
+.rename-btn {
+  padding: 0.35rem 0.6rem;
+  font-size: var(--text-2xs);
+}
+
+.rename-error {
+  flex-basis: 100%;
+  font-size: var(--text-2xs);
+  color: var(--danger);
 }
 
 .ssl-output-card {
@@ -1071,6 +1316,34 @@
   padding: 1.5rem 0.5rem;
 }
 
+/* The main "no sign recognized yet" state (as opposed to the smaller
+   captions-unsupported notice, which keeps the plain .ssl-empty above) —
+   gets an icon and, when there's no history below it either, grows to fill
+   the panel's remaining height so the empty state reads as designed rather
+   than as a sparse label floating above a large unstyled gap. */
+.ssl-empty-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 2rem 1rem;
+}
+
+.ssl-empty-main svg {
+  width: 40px;
+  height: 40px;
+  color: var(--line-strong);
+}
+
+.ssl-empty-main p {
+  max-width: 26ch;
+}
+
+.ssl-empty-fill {
+  flex: 1;
+  justify-content: center;
+}
+
 .ssl-history-heading {
   font-size: var(--text-xs);
   font-weight: 700;
@@ -1123,6 +1396,140 @@
 .panel-placeholder strong {
   color: var(--ink);
   font-size: var(--text-base);
+}
+
+/* ---------- In-call chat ---------- */
+
+.chat-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: -1.1rem -1.1rem -1.5rem; /* fill the panel body's own padding so the input row can dock to its edges */
+  padding: 1.1rem 1.1rem 1rem;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chat-empty {
+  flex: 1;
+  padding: 1rem;
+}
+
+.chat-bubble-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.chat-bubble-row-me {
+  justify-content: flex-end;
+}
+
+.chat-bubble {
+  max-width: 78%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 12px;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.chat-bubble-peer {
+  background: var(--bg);
+  color: var(--ink);
+  border-bottom-left-radius: 3px;
+}
+
+.chat-bubble-me {
+  background: var(--blue);
+  color: #fff;
+  border-bottom-right-radius: 3px;
+}
+
+.chat-bubble-text {
+  white-space: pre-wrap;
+}
+
+.chat-bubble-time {
+  align-self: flex-end;
+  font-size: 0.65rem;
+  opacity: 0.7;
+}
+
+.chat-input-row {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.chat-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.55rem 0.9rem;
+  font-size: var(--text-xs);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.chat-send-btn {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  background: var(--blue);
+  color: #fff;
+}
+
+.chat-send-btn:disabled {
+  opacity: 0.4;
+}
+
+.call-panel-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 0.3rem;
+  margin-left: 0.3rem;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.dock-btn-with-badge {
+  position: relative;
+}
+
+.dock-btn-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: 2px solid var(--card);
 }
 
 /* ---------- Accessibility Settings modal ---------- */

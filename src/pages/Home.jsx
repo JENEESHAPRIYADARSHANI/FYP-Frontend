@@ -20,7 +20,7 @@ function generateRoomCode() {
 export default function Home() {
   const navigate = useNavigate();
   const { t } = useLanguage();
-  const { authenticated, authFetch } = useAuth();
+  const { authenticated, login, authFetch } = useAuth();
   const [joinCode, setJoinCode] = useState("");
   const [backendCheck, setBackendCheck] = useState(null);
 
@@ -38,13 +38,26 @@ export default function Home() {
     }
   };
 
+  // Requiring sign-in before either action, the same way Zoom/Meet require a
+  // logged-in host and attendee, is a deliberate change from this app's
+  // earlier design (anonymous room-code joining). login() redirects to
+  // Keycloak and comes straight back to this same page, so the room code
+  // (for join) or a fresh one (for start) still gets created right after.
   const startClass = () => {
+    if (!authenticated) {
+      login();
+      return;
+    }
     const code = generateRoomCode();
     navigate(`/join/${code}`);
   };
 
   const joinClass = (event) => {
     event.preventDefault();
+    if (!authenticated) {
+      login();
+      return;
+    }
     const code = joinCode.trim().toUpperCase();
     if (code) navigate(`/join/${code}`);
   };
@@ -68,15 +81,20 @@ export default function Home() {
 
         {authenticated && (
           <div className="backend-check">
-            <button className="btn btn-ghost" onClick={verifyBackend}>
+            {/* <button className="btn btn-ghost" onClick={verifyBackend}>
               Verify backend connection
             </button>
+            */}
             {backendCheck?.status === "checking" && <span> Checking…</span>}
             {backendCheck?.status === "ok" && (
-              <span> ✅ Backend verified token for {backendCheck.user.name} (roles: {backendCheck.user.roles.join(", ") || "none"})</span>
+              <span>
+                {" "}
+                Backend verified token for {backendCheck.user.name} (roles:{" "}
+                {backendCheck.user.roles.join(", ") || "none"})
+              </span>
             )}
             {backendCheck?.status === "error" && (
-              <span> ❌ {backendCheck.message}</span>
+              <span> {backendCheck.message}</span>
             )}
           </div>
         )}

@@ -4,9 +4,14 @@ import { useSignalingSocket } from "../hooks/useSignalingSocket.js";
 import { usePeerConnection } from "../hooks/usePeerConnection.js";
 import { useLandmarkStream } from "../hooks/useLandmarkStream.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
+import { useProfile } from "../context/ProfileContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
 import ThemeSwitch from "../components/ThemeSwitch.jsx";
 import AccountBadge from "../components/AccountBadge.jsx";
+import RenameControl from "../components/RenameControl.jsx";
+import CopyLinkButton from "../components/CopyLinkButton.jsx";
+import UserAvatar from "../components/UserAvatar.jsx";
 import { loadSslPreference, saveSslPreference } from "../utils/sslPreference.js";
 import { createCallRecorder, downloadRecording } from "../services/recordingService.js";
 import Whiteboard from "../components/Whiteboard.jsx";
@@ -23,6 +28,8 @@ import {
   SettingsIcon,
   WhiteboardIcon,
   RecordIcon,
+  SwapIcon,
+  HandIcon,
 } from "../components/icons.jsx";
 
 const STATUS_KEY = {
@@ -69,6 +76,8 @@ export default function CallRoom() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useLanguage();
+  const { user } = useAuth();
+  const { profile, saveProfile } = useProfile();
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -90,9 +99,28 @@ export default function CallRoom() {
   );
   const [rightPanelTab, setRightPanelTab] = useState("ssl");
   const [signFocus, setSignFocus] = useState(false);
+  // Which feed is in the big "stage" slot vs the small corner slot — the
+  // Zoom-style "swap"/"pin" feature. With only ever two people in a Hastha
+  // call, pinning one is the same operation as swapping the other into the
+  // corner, so one piece of state covers both. Purely local UI state, never
+  // sent to the peer: each person can arrange their own view independently,
+  // exactly like Zoom/Meet.
+  const [mainView, setMainView] = useState("remote"); // "remote" | "local"
+  // A manual drag-resize of the corner tile, in pixels — null means "use
+  // whatever the accessibility Self-view-size setting/CSS default says".
+  // Cleared whenever that setting changes (see the effect below it) so the
+  // two controls don't fight: picking a preset always wins over a stale drag.
+  const [pipWidth, setPipWidth] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [a11y, setA11y] = useState(loadA11ySettings);
   const [remoteIsSigning, setRemoteIsSigning] = useState(false);
+  // Whether the peer's own camera is on — distinct from `remoteStream`
+  // existing at all (connected vs. not). Assume on until told otherwise:
+  // there's a brief window after connecting before their first camera-state
+  // message arrives, and defaulting to "on" means that window shows a black
+  // video frame rather than an avatar flash that immediately disappears.
+  const [remoteCameraOn, setRemoteCameraOn] = useState(true);
+  const [remoteIdentity, setRemoteIdentity] = useState(null); // { displayName, picture }
   const [sslHistory, setSslHistory] = useState([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -107,8 +135,13 @@ export default function CallRoom() {
   const [voiceOn, setVoiceOn] = useState(true);
   const [liveCaption, setLiveCaption] = useState(null); // { text, at }
   const [peerSign, setPeerSign] = useState(null); // { sign, signSi, at }
+  const [chatMessages, setChatMessages] = useState([]); // { id, from: "me"|"peer", text, at }
+  const [chatDraft, setChatDraft] = useState("");
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   const voiceOnRef = useRef(true);
   const lastSentSignRef = useRef(null);
+  const chatListRef = useRef(null);
+  const rightPanelTabRef = useRef(rightPanelTab);
 
   const { status: signalStatus, role, send, subscribe } = useSignalingSocket(roomCode);
   const { remoteStream, connectionState, replaceVideoTrack } = usePeerConnection({
@@ -192,10 +225,40 @@ export default function CallRoom() {
     send({ type: "signing-state", isSigning });
   }, [isSigning, send]);
 
+  // Tell the peer whenever our own camera flips, so they can show our
+  // avatar in place of a black video frame — the Meet/Zoom-style behavior.
+  useEffect(() => {
+    send({ type: "camera-state", on: cameraOn });
+  }, [cameraOn, send]);
+
+  // Tell the peer who we are (name + Google picture, if signed in with
+  // Google), so that avatar has something real to show. Re-sent whenever
+  // either value changes — display name via a rename, or the profile
+  // finishing its initial load after the signaling connection is already up.
+  useEffect(() => {
+    send({
+      type: "identity",
+      displayName: profile?.display_name || user?.name || null,
+      picture: user?.picture || null,
+    });
+  }, [profile?.display_name, user?.name, user?.picture, send]);
+
   useEffect(() => {
     voiceOnRef.current = voiceOn;
     if (!voiceOn) window.speechSynthesis?.cancel();
   }, [voiceOn]);
+
+  useEffect(() => {
+    rightPanelTabRef.current = rightPanelTab;
+    if (rightPanelTab === "chat") setUnreadChatCount(0);
+  }, [rightPanelTab]);
+
+  // Scroll to the newest message whenever the chat log grows.
+  useEffect(() => {
+    if (chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
 
   // Student -> teacher: send each newly recognized sign once. `prediction`
   // is re-created on every inference while the same sign is held, so we
@@ -245,16 +308,43 @@ export default function CallRoom() {
       if (message.type === "screen-share-state") setRemoteIsSharing(Boolean(message.sharing));
       if (message.type === "recording-state") setRemoteIsRecording(Boolean(message.recording));
       if (message.type === "whiteboard-toggle") setWhiteboardOpen(Boolean(message.open));
+      if (message.type === "camera-state") setRemoteCameraOn(Boolean(message.on));
+      if (message.type === "identity") {
+        setRemoteIdentity({ displayName: message.displayName, picture: message.picture });
+      }
+      if (message.type === "chat-message") {
+        setChatMessages((msgs) => [
+          ...msgs,
+          { id: `${Date.now()}-${Math.random()}`, from: "peer", text: message.text, at: Date.now() },
+        ]);
+        if (rightPanelTabRef.current !== "chat") {
+          setUnreadChatCount((n) => n + 1);
+        }
+      }
       if (message.type === "peer-left") {
         setLiveCaption(null);
         setPeerSign(null);
         setRemoteIsSigning(false);
         setRemoteIsSharing(false);
         setRemoteIsRecording(false);
+        setRemoteCameraOn(true);
+        setRemoteIdentity(null);
+      }
+      // A peer who (re)joins starts with no idea who we are or whether our
+      // camera is on — our own "identity"/"camera-state" effects only fire
+      // when OUR data changes, not when THEY reconnect, so without this the
+      // still-connected side never catches a fresh/reconnected peer up.
+      if (message.type === "peer-joined") {
+        send({
+          type: "identity",
+          displayName: profile?.display_name || user?.name || null,
+          picture: user?.picture || null,
+        });
+        send({ type: "camera-state", on: cameraOn });
       }
     });
     return unsubscribe;
-  }, [subscribe]);
+  }, [subscribe, send, profile?.display_name, user?.name, user?.picture, cameraOn]);
 
   // Recording timer, counted only while actively recording.
   useEffect(() => {
@@ -283,6 +373,15 @@ export default function CallRoom() {
       track.enabled = !track.enabled;
     });
     setMicOn((on) => !on);
+  };
+
+  const sendChatMessage = (event) => {
+    event.preventDefault();
+    const text = chatDraft.trim();
+    if (!text) return;
+    send({ type: "chat-message", text });
+    setChatMessages((msgs) => [...msgs, { id: `${Date.now()}-${Math.random()}`, from: "me", text, at: Date.now() }]);
+    setChatDraft("");
   };
 
   // Actually stops the hardware track on "off" (not just track.enabled =
@@ -367,6 +466,53 @@ export default function CallRoom() {
     }
   };
 
+  // A preset (Standard/Large) picked in Accessibility Settings should always
+  // win over a leftover manual drag from earlier — otherwise choosing
+  // "Standard" there could silently do nothing if a drag had already set an
+  // explicit pixel width.
+  useEffect(() => {
+    setPipWidth(null);
+  }, [a11y.selfViewSize]);
+
+  const swapMainView = () => {
+    setMainView((current) => (current === "remote" ? "local" : "remote"));
+  };
+
+  // Drag-to-resize the corner tile, bounded so it can never outgrow the main
+  // stage or shrink past being useful. Pointer Events (not mouse-only) so
+  // this also works on a touchscreen, and the move/up listeners live on
+  // `window` rather than the handle itself so the drag keeps tracking even
+  // if the pointer slips off the small handle mid-drag.
+  const PIP_MIN_WIDTH = 140;
+  const PIP_MAX_WIDTH = 360;
+  // The width a fresh drag starts from — whatever's on screen right now,
+  // whether that's an earlier manual size or the accessibility preset's
+  // default. Read directly off pipWidth's closure (not a ref): this handler
+  // is a plain function recreated every render, so it always sees the
+  // current value without needing one.
+  const basePipWidth = pipWidth ?? (a11y.selfViewSize === "large" ? 280 : 200);
+  const startPipResize = (event) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = basePipWidth;
+    const onMove = (moveEvent) => {
+      // The corner tile is right-anchored (.call-thumbnails justifies its
+      // content to the end), so its right edge never moves — growing it can
+      // only mean extending leftward, hence subtracting the pointer's
+      // rightward movement rather than adding it. The handle sits at the
+      // top-left corner (see the JSX) precisely so the drag direction reads
+      // naturally: pull left/up and away from the tile to enlarge it.
+      const next = startWidth - (moveEvent.clientX - startX);
+      setPipWidth(Math.min(PIP_MAX_WIDTH, Math.max(PIP_MIN_WIDTH, next)));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   // Shared, not local: either person opening the whiteboard opens it for
   // both, the way a real shared whiteboard should behave. The canvas itself
   // stays mounted at all times (just visually hidden) so drawings survive
@@ -426,8 +572,151 @@ export default function CallRoom() {
     );
   }
 
+  // The signaling connection died unexpectedly — a dropped Wi-Fi/mobile
+  // connection, most commonly, not a deliberate Leave (that navigates away
+  // immediately, unmounting this component before any status could render
+  // here at all) and not the other person leaving normally (that's a
+  // "peer-left" message over a connection that's still very much open, so
+  // signalStatus stays "joined" the whole time). There's genuinely nothing
+  // usable left to show behind this — no video or audio is flowing — so
+  // this replaces the call the same way the room-full screen above does,
+  // rather than floating a dismissible banner over a dead call. Rejoining
+  // just reloads this same URL: every connection here (signaling, the
+  // camera, the peer connection) is set up fresh from scratch on mount
+  // anyway, so re-running that from a clean slate is more robust than
+  // trying to manually patch a half-torn-down WebRTC session back together.
+  if (signalStatus === "closed") {
+    return (
+      <div className="call-room call-room-blocked">
+        <div className="blocked-card">
+          <span className="dot dot-danger" />
+          <h1>{t("call.connectionLostTitle")}</h1>
+          <p>{t("call.connectionLostDesc")}</p>
+          <button className="btn btn-primary" onClick={() => window.location.reload()}>
+            {t("call.rejoinMeeting")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const statusKey = connectionState in STATUS_KEY ? connectionState : "connecting";
   const otherRoleLabel = role === "teacher" ? t("call.student") : role === "student" ? t("call.teacher") : t("call.participant");
+
+  // Swapping only means something once there are genuinely two feeds to
+  // choose between — with the peer not yet connected, "local" would have
+  // nothing to trade places with, so the stage always shows the waiting
+  // state and the corner always shows you, regardless of a stale mainView.
+  const swapAvailable = Boolean(remoteStream) && !whiteboardOpen;
+  const showLocalAsMain = swapAvailable && mainView === "local";
+
+  // The remote feed's own content — video, camera-off avatar, activity
+  // badges, identity chip — independent of whether it's currently rendered
+  // in the big stage or the small corner tile. `big` only changes whether
+  // the Sign Focus control (hide the other tile for a cleaner view) makes
+  // sense to offer here.
+  function renderRemoteFeed(big) {
+    if (!remoteStream) {
+      return (
+        <div className="call-waiting">
+          <span className="call-waiting-ring" />
+          <p>{t("call.waiting")}</p>
+        </div>
+      );
+    }
+    return (
+      <>
+        {/* Stays mounted even with the camera off, only hidden — the same
+            reasoning as the whiteboard stage below: unmounting it would drop
+            the srcObject binding set by the `[remoteStream]` effect, which
+            only re-runs when the *stream* changes, not on a remount (which
+            now also happens on a manual swap, not just a camera toggle). */}
+        <video ref={remoteVideoRef} autoPlay playsInline hidden={!remoteCameraOn} />
+        {!remoteCameraOn && (
+          <div className="call-remote-camera-off">
+            <UserAvatar
+              picture={remoteIdentity?.picture}
+              name={remoteIdentity?.displayName || otherRoleLabel}
+              size={big ? 96 : 56}
+              className="user-avatar-img call-off-avatar-img call-off-avatar-initial"
+            />
+          </div>
+        )}
+        <div className="call-remote-badges">
+          {remoteIsSigning && (
+            <span className="call-signing-badge">
+              <span className="dot" /> {t("call.signingBadge")}
+            </span>
+          )}
+          {remoteIsSharing && (
+            <span className="call-signing-badge call-sharing-badge">
+              <span className="dot" /> {t("call.peerSharing")}
+            </span>
+          )}
+        </div>
+        {big && (
+          <button className="sign-focus-btn" aria-pressed={signFocus} onClick={() => setSignFocus((v) => !v)}>
+            ⤢ {t("call.signFocus")}
+          </button>
+        )}
+        <span className="call-speaker-chip">
+          <span className={`dot ${statusKey === "connected" ? "dot-ok" : "dot-warn"}`} />
+          {otherRoleLabel}
+        </span>
+      </>
+    );
+  }
+
+  // Same idea for the local feed: your own video, your camera-off avatar,
+  // the mic/name tag — rendered the same way whichever slot it's currently in.
+  function renderLocalFeed(big) {
+    return (
+      <>
+        <video
+          ref={(el) => {
+            // This element unmounts/remounts on a camera toggle *and* now on
+            // a swap too, which drops the DOM-level srcObject binding — a
+            // plain ref only fires on mount, with nothing to rebind it
+            // afterwards, so set it right here rather than relying on a
+            // separate effect. Guarded on identity: this inline callback
+            // gets a new function reference every render, so React
+            // re-invokes it on every re-render of CallRoom, not just on
+            // mount/remount — reassigning srcObject to the *same* stream on
+            // an already-playing video briefly flashes/blacks it out in
+            // Chromium. Only assign when the stream actually changed.
+            localVideoRef.current = el;
+            if (el && localStream && el.srcObject !== localStream) {
+              el.srcObject = localStream;
+            }
+          }}
+          autoPlay
+          muted
+          playsInline
+          hidden={!cameraOn}
+          className="mirrored"
+        />
+        {!cameraOn && (
+          <div className="call-local-off">
+            <UserAvatar
+              picture={user?.picture}
+              name={profile?.display_name || user?.name}
+              size={big ? 96 : 56}
+              className="user-avatar-img call-off-avatar-img call-off-avatar-initial"
+            />
+          </div>
+        )}
+        {big && swapAvailable && (
+          <button className="sign-focus-btn" aria-pressed={signFocus} onClick={() => setSignFocus((v) => !v)}>
+            ⤢ {t("call.signFocus")}
+          </button>
+        )}
+        <span className="call-local-tag">
+          <span className={`dot ${micOn ? "dot-ok" : "dot-danger"}`} />
+          {t("call.you")}
+        </span>
+      </>
+    );
+  }
 
   return (
     <div className={`call-room${a11y.highContrast ? " high-contrast" : ""}`}>
@@ -440,6 +729,7 @@ export default function CallRoom() {
             {statusKey === "connected" && ` · ${formatDuration(elapsedSeconds)}`}
           </span>
         </div>
+        <CopyLinkButton roomCode={roomCode} />
         {isScreenSharing && (
           <button className="pill call-sharing-pill" onClick={stopScreenShare}>
             <span className="dot dot-ok" />
@@ -470,38 +760,17 @@ export default function CallRoom() {
               conditional rendering) so the whiteboard's canvas bitmap and the
               remote <video>'s srcObject both survive switching back and forth. */}
           <div className="call-remote" hidden={whiteboardOpen}>
-            {remoteStream ? (
-              <>
-                <video ref={remoteVideoRef} autoPlay playsInline />
-                <div className="call-remote-badges">
-                  {remoteIsSigning && (
-                    <span className="call-signing-badge">
-                      <span className="dot" /> {t("call.signingBadge")}
-                    </span>
-                  )}
-                  {remoteIsSharing && (
-                    <span className="call-signing-badge call-sharing-badge">
-                      <span className="dot" /> {t("call.peerSharing")}
-                    </span>
-                  )}
-                </div>
-                <button
-                  className="sign-focus-btn"
-                  aria-pressed={signFocus}
-                  onClick={() => setSignFocus((v) => !v)}
-                >
-                  ⤢ {t("call.signFocus")}
-                </button>
-                <span className="call-speaker-chip">
-                  <span className={`dot ${statusKey === "connected" ? "dot-ok" : "dot-warn"}`} />
-                  {otherRoleLabel}
-                </span>
-              </>
-            ) : (
-              <div className="call-waiting">
-                <span className="call-waiting-ring" />
-                <p>{t("call.waiting")}</p>
-              </div>
+            {showLocalAsMain ? renderLocalFeed(true) : renderRemoteFeed(true)}
+            {swapAvailable && (
+              <button
+                type="button"
+                className="swap-view-btn swap-view-btn-main"
+                onClick={swapMainView}
+                title={t("call.swapView")}
+                aria-label={t("call.swapView")}
+              >
+                <SwapIcon />
+              </button>
             )}
           </div>
 
@@ -545,44 +814,32 @@ export default function CallRoom() {
                 </span>
               </div>
             )}
-            <div className={`call-local${a11y.selfViewSize === "large" ? " self-view-large" : ""}`}>
-              {cameraOn ? (
-                <video
-                  ref={(el) => {
-                    // This element unmounts/remounts each time cameraOn
-                    // flips (see the placeholder div below), which drops the
-                    // DOM-level srcObject binding — a plain ref only fires on
-                    // mount, with nothing to rebind it afterwards, so set it
-                    // right here rather than relying on a separate effect.
-                    // Guarded on identity: this inline callback gets a new
-                    // function reference every render, so React re-invokes it
-                    // on every re-render of CallRoom, not just on mount/
-                    // remount — and while sign detection is running, that's
-                    // very often (isSigning flips as hands enter/leave frame,
-                    // prediction updates every ~400ms). Reassigning
-                    // srcObject to the *same* stream on an already-playing
-                    // video briefly flashes/blacks it out in Chromium, which
-                    // is what showed up as flicker during detection. Only
-                    // assign when the stream actually changed.
-                    localVideoRef.current = el;
-                    if (el && localStream && el.srcObject !== localStream) {
-                      el.srcObject = localStream;
-                    }
-                  }}
-                  autoPlay
-                  muted
-                  playsInline
+            {!whiteboardOpen && (
+              <div
+                className={`call-local${a11y.selfViewSize === "large" ? " self-view-large" : ""}`}
+                style={pipWidth ? { width: `${pipWidth}px` } : undefined}
+              >
+                {showLocalAsMain ? renderRemoteFeed(false) : renderLocalFeed(false)}
+                {swapAvailable && (
+                  <button
+                    type="button"
+                    className="swap-view-btn swap-view-btn-pip"
+                    onClick={swapMainView}
+                    title={t("call.swapView")}
+                    aria-label={t("call.swapView")}
+                  >
+                    <SwapIcon />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="pip-resize-handle"
+                  onPointerDown={startPipResize}
+                  title={t("call.resizeView")}
+                  aria-label={t("call.resizeView")}
                 />
-              ) : (
-                <div className="call-local-off">
-                  <span className="avatar-placeholder" />
-                </div>
-              )}
-              <span className="call-local-tag">
-                <span className={`dot ${micOn ? "dot-ok" : "dot-danger"}`} />
-                {t("call.you")}
-              </span>
-            </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -612,14 +869,9 @@ export default function CallRoom() {
                 onClick={() => setRightPanelTab("chat")}
               >
                 {t("call.tabChat")}
-              </button>
-              <button
-                className="call-panel-tab"
-                role="tab"
-                aria-selected={rightPanelTab === "transcript"}
-                onClick={() => setRightPanelTab("transcript")}
-              >
-                {t("call.tabTranscript")}
+                {unreadChatCount > 0 && (
+                  <span className="call-panel-tab-badge">{unreadChatCount}</span>
+                )}
               </button>
               <button
                 className="call-panel-close"
@@ -635,15 +887,34 @@ export default function CallRoom() {
                 <>
                   <div className="panel-heading">{t("call.participantsHeading")}</div>
                   <div className="panel-row">
+                    <UserAvatar
+                      picture={user?.picture}
+                      name={profile?.display_name || user?.name}
+                      className="participant-avatar"
+                    />
                     <div className="panel-row-label">
-                      <strong>{t("call.you")}</strong>
+                      <RenameControl
+                        displayName={profile?.display_name || t("call.you")}
+                        onRename={(newName) =>
+                          saveProfile({
+                            displayName: newName,
+                            cameraDefault: profile?.camera_default ?? true,
+                            micDefault: profile?.mic_default ?? true,
+                          })
+                        }
+                      />
                       <span>{roleLabel(role)}</span>
                     </div>
                     <span className={`dot ${micOn ? "dot-ok" : "dot-danger"}`} />
                   </div>
                   <div className="panel-row">
+                    <UserAvatar
+                      picture={remoteIdentity?.picture}
+                      name={remoteIdentity?.displayName || otherRoleLabel}
+                      className="participant-avatar"
+                    />
                     <div className="panel-row-label">
-                      <strong>{otherRoleLabel}</strong>
+                      <strong>{remoteIdentity?.displayName || otherRoleLabel}</strong>
                       <span>{remoteStream ? t("call.connected") : t("call.waitingToJoin")}</span>
                     </div>
                     <span className={`dot ${remoteStream ? "dot-ok" : "dot-warn"}`} />
@@ -709,8 +980,9 @@ export default function CallRoom() {
                       </span>
                     </div>
                   ) : (
-                    <div className="ssl-empty">
-                      {recognitionOn ? t("call.sslEmptyOn") : t("call.sslEmptyOff")}
+                    <div className={`ssl-empty ssl-empty-main${sslHistory.length === 0 ? " ssl-empty-fill" : ""}`}>
+                      <HandIcon />
+                      <p>{recognitionOn ? t("call.sslEmptyOn") : t("call.sslEmptyOff")}</p>
                     </div>
                   )}
 
@@ -734,16 +1006,42 @@ export default function CallRoom() {
               )}
 
               {rightPanelTab === "chat" && (
-                <div className="panel-placeholder">
-                  <strong>{t("call.chatSoonTitle")}</strong>
-                  <p>{t("call.chatSoonDesc")}</p>
-                </div>
-              )}
-
-              {rightPanelTab === "transcript" && (
-                <div className="panel-placeholder">
-                  <strong>{t("call.transcriptSoonTitle")}</strong>
-                  <p>{t("call.transcriptSoonDesc")}</p>
+                <div className="chat-panel">
+                  <div className="chat-messages" ref={chatListRef}>
+                    {chatMessages.length === 0 ? (
+                      <div className="panel-placeholder chat-empty">
+                        <strong>{t("call.chatEmptyTitle")}</strong>
+                        <p>{t("call.chatEmptyDesc")}</p>
+                      </div>
+                    ) : (
+                      chatMessages.map((msg) => (
+                        <div
+                          key={msg.id}
+                          className={`chat-bubble-row ${msg.from === "me" ? "chat-bubble-row-me" : ""}`}
+                        >
+                          <div className={`chat-bubble ${msg.from === "me" ? "chat-bubble-me" : "chat-bubble-peer"}`}>
+                            <span className="chat-bubble-text">{msg.text}</span>
+                            <time className="chat-bubble-time">
+                              {new Date(msg.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            </time>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <form className="chat-input-row" onSubmit={sendChatMessage}>
+                    <input
+                      type="text"
+                      className="chat-input"
+                      value={chatDraft}
+                      onChange={(event) => setChatDraft(event.target.value)}
+                      placeholder={t("call.chatInputPlaceholder")}
+                      aria-label={t("call.chatInputPlaceholder")}
+                    />
+                    <button type="submit" className="chat-send-btn" disabled={!chatDraft.trim()}>
+                      {t("call.send")}
+                    </button>
+                  </form>
                 </div>
               )}
             </div>
@@ -813,13 +1111,14 @@ export default function CallRoom() {
           <ParticipantsIcon />
         </button>
         <button
-          className="dock-btn"
+          className="dock-btn dock-btn-with-badge"
           aria-pressed={rightPanelTab === "chat"}
           aria-label={t("call.chatToggle")}
           title={t("call.tabChat")}
           onClick={() => togglePanel("chat")}
         >
           <ChatIcon />
+          {unreadChatCount > 0 && rightPanelTab !== "chat" && <span className="dock-btn-badge" />}
         </button>
         <button className="dock-btn" aria-label={t("call.moreOptions")} title={t("call.settingsOpen")} onClick={() => setSettingsOpen(true)}>
           <MoreIcon />

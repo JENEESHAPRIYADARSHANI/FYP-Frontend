@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useProfile } from "../context/ProfileContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import UserAvatar from "./UserAvatar.jsx";
 
 // Roles every Keycloak user carries by default — noise, not information, so
 // the dropdown only shows roles someone actually assigned (teacher/student).
@@ -17,6 +19,7 @@ const SYSTEM_ROLES = new Set(["offline_access", "uma_authorization", "default-ro
 export default function AccountBadge({ className = "" }) {
   const { t } = useLanguage();
   const { initialized, authenticated, user, login, logout } = useAuth();
+  const { profile } = useProfile();
   const [menuOpen, setMenuOpen] = useState(false);
   const rootRef = useRef(null);
 
@@ -46,8 +49,11 @@ export default function AccountBadge({ className = "" }) {
     );
   }
 
-  const displayName = user?.name ?? user?.email ?? "?";
-  const initial = displayName.trim().charAt(0).toUpperCase();
+  // The name chosen on the onboarding screen (or a later rename) takes
+  // priority over Keycloak's own `name` claim — that's whatever Google/the
+  // realm happened to set at sign-up, not necessarily what someone wants
+  // others to see them as.
+  const displayName = profile?.display_name || user?.name || user?.email || "?";
   const roles = (user?.roles ?? []).filter((role) => !SYSTEM_ROLES.has(role));
 
   return (
@@ -59,14 +65,14 @@ export default function AccountBadge({ className = "" }) {
         aria-label={displayName}
         onClick={() => setMenuOpen((open) => !open)}
       >
-        <span className="account-avatar" aria-hidden="true">{initial}</span>
+        <UserAvatar picture={user?.picture} name={displayName} className="account-avatar" />
         {!menuOpen && user?.email && <span className="account-tooltip">{user.email}</span>}
       </button>
 
       {menuOpen && (
         <div className="account-dropdown" role="menu">
           <div className="account-dropdown-header">
-            <span className="account-avatar account-avatar-lg" aria-hidden="true">{initial}</span>
+            <UserAvatar picture={user?.picture} name={displayName} className="account-avatar account-avatar-lg" />
             <div className="account-dropdown-identity">
               <strong>{displayName}</strong>
               {user?.email && <span>{user.email}</span>}

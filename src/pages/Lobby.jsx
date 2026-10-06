@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useProfile } from "../context/ProfileContext.jsx";
 import LanguageSwitch from "../components/LanguageSwitch.jsx";
 import ThemeSwitch from "../components/ThemeSwitch.jsx";
 import AccountBadge from "../components/AccountBadge.jsx";
+import CopyLinkButton from "../components/CopyLinkButton.jsx";
 import { loadSslPreference, saveSslPreference } from "../utils/sslPreference.js";
 
 // Pre-call lobby: camera/mic preview + device picker before joining the room.
@@ -12,14 +14,19 @@ export default function Lobby() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
   const { t } = useLanguage();
+  const { profile } = useProfile();
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
   const [devices, setDevices] = useState({ cameras: [], mics: [] });
   const [selectedCamera, setSelectedCamera] = useState("");
   const [selectedMic, setSelectedMic] = useState("");
-  const [micOn, setMicOn] = useState(true);
-  const [cameraOn, setCameraOn] = useState(true);
+  // Seeded from the account-level defaults set on the onboarding screen (or
+  // a later change there) — RequireAuth guarantees this route only renders
+  // once signed in, and OnboardingGate guarantees the profile has already
+  // loaded by then, so `profile` is populated here, not mid-fetch.
+  const [micOn, setMicOn] = useState(() => profile?.mic_default ?? true);
+  const [cameraOn, setCameraOn] = useState(() => profile?.camera_default ?? true);
   const [error, setError] = useState(null);
   const [sslEnabled, setSslEnabled] = useState(loadSslPreference);
 
@@ -38,6 +45,16 @@ export default function Lobby() {
         }
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
+        // Acquiring the stream always requests both tracks live — align
+        // their enabled state with the saved on/off defaults right away, so
+        // e.g. a "camera off by default" profile actually previews off
+        // instead of only taking effect on the next manual toggle.
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = cameraOn;
+        });
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = micOn;
+        });
 
         const allDevices = await navigator.mediaDevices.enumerateDevices();
         const cameras = allDevices.filter((d) => d.kind === "videoinput");
@@ -55,6 +72,10 @@ export default function Lobby() {
       cancelled = true;
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
+    // Deliberately mount-only: cameraOn/micOn are read once here to seed the
+    // freshly-acquired tracks' initial enabled state, not to be watched —
+    // the toggle buttons already handle changes after that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleMic = () => {
@@ -93,6 +114,7 @@ export default function Lobby() {
           <span className="dot dot-ok" />
           {t("lobby.room")} · {roomCode}
         </span>
+        <CopyLinkButton roomCode={roomCode} />
         <div className="header-controls">
           <ThemeSwitch />
           <LanguageSwitch />
